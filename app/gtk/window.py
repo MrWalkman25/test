@@ -3,7 +3,8 @@ import gi
 gi.require_version("Gtk", "4.0")
 gi.require_version("Adw", "1")
 
-from datetime import datetime
+import calendar as pycalendar
+from datetime import date, datetime, timedelta
 
 from gi.repository import Adw, Gdk, GLib, Gtk
 
@@ -74,6 +75,39 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         }
         .muted-text {
             color: #7a8793;
+        }
+        .calendar-chip {
+            border-radius: 8px;
+            padding: 3px 6px;
+            font-size: 11px;
+        }
+        .chip-overdue {
+            background: alpha(#d14b4b, 0.18);
+            color: #d14b4b;
+        }
+        .chip-muted {
+            background: alpha(#7a8793, 0.16);
+            color: #7a8793;
+        }
+        .chip-active {
+            background: alpha(#4e8ad9, 0.16);
+            color: #4e8ad9;
+        }
+        .chip-new {
+            background: alpha(#67a26d, 0.16);
+            color: #4f8c55;
+        }
+        .calendar-day-box {
+            border-radius: 10px;
+            padding: 8px;
+            background: alpha(@window_fg_color, 0.03);
+        }
+        .calendar-day-title {
+            font-weight: 600;
+            opacity: 0.85;
+        }
+        .mode-button-active {
+            background: alpha(#4e8ad9, 0.2);
         }
         """
         provider = Gtk.CssProvider()
@@ -153,17 +187,17 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.mode_stack.set_hexpand(True)
         self.mode_stack.set_vexpand(True)
 
-        self.calendar_placeholder = Gtk.Label(
-            label="Calendar view (наступний етап міграції).\nШвидкі деталі задачі доступні через popover у списку зліва."
-        )
-        self.calendar_placeholder.set_wrap(True)
+        self.calendar_mode: str = "month"
+        self.calendar_focus_date = date.today()
+        self.day_plan_date: date | None = None
+        self.calendar_page = self._build_calendar_page()
 
         self.new_task_page = self._build_new_task_page()
 
         self.edit_page = self._build_edit_page()
         self.task_view_page = self._build_task_view_page()
 
-        self.mode_stack.add_titled(self.calendar_placeholder, "calendar", "Calendar")
+        self.mode_stack.add_titled(self.calendar_page, "calendar", "Calendar")
         self.mode_stack.add_titled(self.task_view_page, "task", "Task View")
         self.mode_stack.add_titled(self.edit_page, "edit", "Edit Task")
         self.mode_stack.add_titled(self.new_task_page, "new", "New Task")
@@ -180,7 +214,7 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         root.append(content)
         self.set_content(root)
 
-    def _build_task_popover(self, task: dict, row: Gtk.ListBoxRow) -> Gtk.Popover:
+    def _build_task_popover(self, task: dict, anchor_widget: Gtk.Widget) -> Gtk.Popover:
         popover = Gtk.Popover()
         popover.set_autohide(True)
 
@@ -232,7 +266,7 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         card.append(edit_button)
 
         popover.set_child(card)
-        popover.set_parent(row)
+        popover.set_parent(anchor_widget)
         popover.connect("closed", self._on_task_popover_closed, popover)
         return popover
 
@@ -260,6 +294,64 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
 
         popover.set_child(box)
         return popover
+
+    def _build_calendar_page(self) -> Gtk.Box:
+        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        container.set_hexpand(True)
+        container.set_vexpand(True)
+
+        controls = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        controls.set_halign(Gtk.Align.FILL)
+
+        self.calendar_month_button = Gtk.Button(label="Місяць")
+        self.calendar_week_button = Gtk.Button(label="Тиждень")
+        self.calendar_today_mode_button = Gtk.Button(label="Сьогодні")
+
+        self.calendar_month_button.connect("clicked", self._on_calendar_mode_clicked, "month")
+        self.calendar_week_button.connect("clicked", self._on_calendar_mode_clicked, "week")
+        self.calendar_today_mode_button.connect("clicked", self._on_calendar_mode_clicked, "today")
+
+        self.calendar_prev_button = Gtk.Button(label="←")
+        self.calendar_next_button = Gtk.Button(label="→")
+        self.calendar_prev_button.connect("clicked", self._on_calendar_shift_clicked, -1)
+        self.calendar_next_button.connect("clicked", self._on_calendar_shift_clicked, 1)
+
+        self.calendar_jump_today_button = Gtk.Button(label="Сьогодні")
+        self.calendar_jump_today_button.connect("clicked", self._on_calendar_jump_today_clicked)
+
+        self.calendar_back_button = Gtk.Button(label="Назад")
+        self.calendar_back_button.connect("clicked", self._on_calendar_back_clicked)
+        self.calendar_back_button.set_visible(False)
+
+        self.calendar_title = Gtk.Label()
+        self.calendar_title.set_xalign(0)
+        self.calendar_title.add_css_class("panel-title")
+        self.calendar_title.set_hexpand(True)
+
+        controls.append(self.calendar_month_button)
+        controls.append(self.calendar_week_button)
+        controls.append(self.calendar_today_mode_button)
+        controls.append(self.calendar_prev_button)
+        controls.append(self.calendar_next_button)
+        controls.append(self.calendar_jump_today_button)
+        controls.append(self.calendar_back_button)
+
+        self.calendar_scroller = Gtk.ScrolledWindow()
+        self.calendar_scroller.set_hexpand(True)
+        self.calendar_scroller.set_vexpand(True)
+        self.calendar_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        self.calendar_content = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+        self.calendar_content.set_margin_top(4)
+        self.calendar_content.set_margin_bottom(4)
+        self.calendar_content.set_margin_start(4)
+        self.calendar_content.set_margin_end(4)
+        self.calendar_scroller.set_child(self.calendar_content)
+
+        container.append(controls)
+        container.append(self.calendar_title)
+        container.append(self.calendar_scroller)
+        return container
 
     def _build_new_task_page(self) -> Gtk.Box:
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -489,6 +581,232 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.all_tasks = get_tasks()
         self._refresh_tag_filter_options()
         self._apply_filters_and_render()
+        self._render_calendar()
+
+    def _render_calendar(self) -> None:
+        self._update_calendar_mode_buttons()
+
+        for child in list(self.calendar_content):
+            self.calendar_content.remove(child)
+
+        if self.day_plan_date is not None:
+            self.calendar_title.set_text(f"План на день: {self.day_plan_date.isoformat()}")
+            self.calendar_back_button.set_visible(True)
+            self._render_day_plan(self.day_plan_date)
+            return
+
+        self.calendar_back_button.set_visible(False)
+        if self.calendar_mode == "month":
+            self._render_month_view()
+        elif self.calendar_mode == "week":
+            self._render_week_view()
+        else:
+            self._render_today_view()
+
+    def _update_calendar_mode_buttons(self) -> None:
+        buttons = [
+            (self.calendar_month_button, "month"),
+            (self.calendar_week_button, "week"),
+            (self.calendar_today_mode_button, "today"),
+        ]
+        for button, mode in buttons:
+            if mode == self.calendar_mode and self.day_plan_date is None:
+                button.add_css_class("mode-button-active")
+            else:
+                button.remove_css_class("mode-button-active")
+
+    def _on_calendar_mode_clicked(self, _button: Gtk.Button, mode: str) -> None:
+        self.day_plan_date = None
+        self.calendar_mode = mode
+        if mode == "today":
+            self.calendar_focus_date = date.today()
+        self._render_calendar()
+
+    def _on_calendar_shift_clicked(self, _button: Gtk.Button, delta: int) -> None:
+        if self.day_plan_date is not None:
+            self.day_plan_date = self.day_plan_date + timedelta(days=delta)
+            self._render_calendar()
+            return
+
+        if self.calendar_mode == "month":
+            year = self.calendar_focus_date.year
+            month = self.calendar_focus_date.month + delta
+            if month < 1:
+                year -= 1
+                month = 12
+            elif month > 12:
+                year += 1
+                month = 1
+            self.calendar_focus_date = self.calendar_focus_date.replace(year=year, month=month, day=1)
+        else:
+            self.calendar_focus_date = self.calendar_focus_date + timedelta(days=7 * delta)
+        self._render_calendar()
+
+    def _on_calendar_jump_today_clicked(self, _button: Gtk.Button) -> None:
+        self.calendar_focus_date = date.today()
+        self.day_plan_date = None
+        self._render_calendar()
+
+    def _on_calendar_back_clicked(self, _button: Gtk.Button) -> None:
+        self.day_plan_date = None
+        self._render_calendar()
+
+    def _render_month_view(self) -> None:
+        self.calendar_title.set_text(self.calendar_focus_date.strftime("%B %Y"))
+        grid = Gtk.Grid(column_spacing=6, row_spacing=6)
+        grid.set_column_homogeneous(True)
+
+        week_days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
+        for i, wd in enumerate(week_days):
+            header = Gtk.Label(label=wd)
+            header.add_css_class("calendar-day-title")
+            grid.attach(header, i, 0, 1, 1)
+
+        month_matrix = pycalendar.Calendar(firstweekday=0).monthdatescalendar(
+            self.calendar_focus_date.year,
+            self.calendar_focus_date.month,
+        )
+        for row_i, week in enumerate(month_matrix, start=1):
+            for col_i, day_date in enumerate(week):
+                day_widget = self._build_day_cell(day_date, compact=True)
+                if day_date.month != self.calendar_focus_date.month:
+                    day_widget.set_sensitive(False)
+                grid.attach(day_widget, col_i, row_i, 1, 1)
+
+        self.calendar_content.append(grid)
+
+    def _render_week_view(self) -> None:
+        week_start = self.calendar_focus_date - timedelta(days=self.calendar_focus_date.weekday())
+        week_end = week_start + timedelta(days=6)
+        self.calendar_title.set_text(
+            f"Тиждень: {week_start.isoformat()} — {week_end.isoformat()}"
+        )
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        for i in range(7):
+            day_date = week_start + timedelta(days=i)
+            day_widget = self._build_day_cell(day_date, compact=False)
+            day_widget.set_hexpand(True)
+            row.append(day_widget)
+        self.calendar_content.append(row)
+
+    def _render_today_view(self) -> None:
+        today = date.today()
+        self.calendar_title.set_text(f"Сьогодні: {today.isoformat()}")
+        self.calendar_content.append(self._build_day_cell(today, compact=False))
+
+    def _render_day_plan(self, day_date: date) -> None:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        tasks = self._tasks_for_date(day_date)
+        if not tasks:
+            box.append(Gtk.Label(label="На цей день задач із дедлайном немає"))
+        else:
+            for task in tasks:
+                box.append(self._build_task_chip(task, day_date, emphasize=True))
+        self.calendar_content.append(box)
+
+    def _build_day_cell(self, day_date: date, compact: bool) -> Gtk.Box:
+        day_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        day_box.add_css_class("calendar-day-box")
+        title = Gtk.Label(label=day_date.strftime("%d.%m (%a)"))
+        title.set_xalign(0)
+        title.add_css_class("calendar-day-title")
+        day_box.append(title)
+
+        tasks = self._tasks_for_date(day_date)
+        limit = 3 if compact else 8
+        for task in tasks[:limit]:
+            day_box.append(self._build_task_chip(task, day_date, emphasize=not compact))
+
+        if len(tasks) > limit:
+            more = Gtk.Label(label=f"+{len(tasks) - limit} ще")
+            more.set_xalign(0)
+            more.add_css_class("muted-text")
+            day_box.append(more)
+
+        day_double_click = Gtk.GestureClick.new()
+        day_double_click.set_button(1)
+        day_double_click.connect("released", self._on_day_cell_clicked, day_date)
+        day_box.add_controller(day_double_click)
+        return day_box
+
+    def _build_task_chip(self, task: dict, day_date: date, emphasize: bool) -> Gtk.Button:
+        label_parts = [task.get("title") or "(без назви)"]
+        reminder = task.get("reminder_at")
+        if reminder and len(reminder) >= 16:
+            label_parts.append(reminder[11:16])
+        chip = Gtk.Button(label=" • ".join(label_parts))
+        chip.set_halign(Gtk.Align.FILL)
+        chip.add_css_class("calendar-chip")
+        if emphasize:
+            chip.set_hexpand(True)
+        self._apply_task_chip_style(chip, task)
+
+        click = Gtk.GestureClick.new()
+        click.set_button(1)
+        click.connect("released", self._on_calendar_task_clicked, task["id"], chip)
+        chip.add_controller(click)
+        return chip
+
+    def _on_day_cell_clicked(
+        self,
+        _gesture: Gtk.GestureClick,
+        n_press: int,
+        _x: float,
+        _y: float,
+        day_date: date,
+    ) -> None:
+        if n_press == 2:
+            self.day_plan_date = day_date
+            self._render_calendar()
+
+    def _on_calendar_task_clicked(
+        self,
+        _gesture: Gtk.GestureClick,
+        n_press: int,
+        _x: float,
+        _y: float,
+        task_id: int,
+        widget: Gtk.Widget,
+    ) -> None:
+        task = self._task_by_id(task_id)
+        if task is None:
+            return
+
+        self.selected_task_id = task_id
+        row = self._find_row_by_task_id(task_id)
+        if row:
+            self.tasks_listbox.select_row(row)
+
+        if n_press == 2:
+            self._open_full_task_view(task_id)
+            return
+
+        if n_press == 1:
+            self._show_task_popover(widget, task)
+
+    def _tasks_for_date(self, day_date: date) -> list[dict]:
+        return [t for t in self.all_tasks if self._deadline_date(t) == day_date]
+
+    def _deadline_date(self, task: dict) -> date | None:
+        deadline = task.get("deadline")
+        if not deadline:
+            return None
+        deadline_str = str(deadline)[:10]
+        try:
+            return datetime.strptime(deadline_str, "%Y-%m-%d").date()
+        except ValueError:
+            return None
+
+    def _apply_task_chip_style(self, chip: Gtk.Button, task: dict) -> None:
+        status = self._effective_status(task)
+        if status == STATUS_OVERDUE:
+            chip.add_css_class("chip-overdue")
+        elif status in {STATUS_DONE, STATUS_CANCELLED}:
+            chip.add_css_class("chip-muted")
+        elif status == STATUS_IN_PROGRESS:
+            chip.add_css_class("chip-active")
+        else:
+            chip.add_css_class("chip-new")
 
     def _refresh_tag_filter_options(self) -> None:
         current_tag = self._get_selected_tag()
@@ -674,10 +992,10 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self._show_task_popover(row, task)
         return False
 
-    def _show_task_popover(self, row: Gtk.ListBoxRow, task: dict) -> None:
+    def _show_task_popover(self, anchor_widget: Gtk.Widget, task: dict) -> None:
         self._dismiss_context_popover()
         self._dismiss_task_popover()
-        popover = self._build_task_popover(task, row)
+        popover = self._build_task_popover(task, anchor_widget)
         popover.popup()
         self.active_task_popover = popover
 
