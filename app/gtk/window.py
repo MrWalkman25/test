@@ -408,6 +408,8 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
 
     def _build_edit_page(self) -> Gtk.Box:
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        container.set_hexpand(True)
+        container.set_vexpand(True)
 
         title = Gtk.Label(label="Редагування задачі")
         title.set_xalign(0)
@@ -416,13 +418,24 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.edit_task_info = Gtk.Label(label="Оберіть задачу")
         self.edit_task_info.set_xalign(0)
 
-        grid = Gtk.Grid(column_spacing=8, row_spacing=8)
+        form_scroller = Gtk.ScrolledWindow()
+        form_scroller.set_hexpand(True)
+        form_scroller.set_vexpand(True)
+        form_scroller.set_policy(Gtk.PolicyType.NEVER, Gtk.PolicyType.AUTOMATIC)
+
+        form_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        form_box.set_margin_top(4)
+        form_box.set_margin_bottom(4)
+        form_box.set_margin_start(4)
+        form_box.set_margin_end(4)
 
         self.edit_title = Gtk.Entry()
+        self.edit_title.set_hexpand(True)
         self.edit_description = Gtk.TextView()
         self.edit_description.set_vexpand(True)
-        self.edit_description.set_size_request(-1, 120)
+        self.edit_description.set_size_request(-1, 180)
         self.edit_tag = Gtk.Entry()
+        self.edit_tag.set_hexpand(True)
 
         self.edit_status_model = Gtk.StringList.new([
             STATUS_NEW,
@@ -431,15 +444,19 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             STATUS_CANCELLED,
         ])
         self.edit_status = Gtk.DropDown(model=self.edit_status_model)
+        self.edit_status.set_hexpand(True)
 
         self.edit_priority_model = Gtk.StringList.new(["low", "normal", "high"])
         self.edit_priority = Gtk.DropDown(model=self.edit_priority_model)
         self.edit_priority.set_selected(1)
+        self.edit_priority.set_hexpand(True)
 
         self.edit_deadline = Gtk.Entry()
         self.edit_deadline.set_placeholder_text("YYYY-MM-DD")
+        self.edit_deadline.set_hexpand(True)
         self.edit_reminder = Gtk.Entry()
         self.edit_reminder.set_placeholder_text("YYYY-MM-DDTHH:MM")
+        self.edit_reminder.set_hexpand(True)
 
         rows: list[tuple[str, Gtk.Widget]] = [
             ("Назва", self.edit_title),
@@ -451,18 +468,20 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             ("Нагадування", self.edit_reminder),
         ]
 
-        for i, (label_text, widget) in enumerate(rows):
+        for label_text, widget in rows:
             label = Gtk.Label(label=label_text)
             label.set_xalign(0)
-            grid.attach(label, 0, i, 1, 1)
-            grid.attach(widget, 1, i, 1, 1)
+            form_box.append(label)
+            form_box.append(widget)
+
+        form_scroller.set_child(form_box)
 
         self.edit_save_button = Gtk.Button(label="Зберегти зміни")
         self.edit_save_button.connect("clicked", self._on_save_edit_clicked)
 
         container.append(title)
         container.append(self.edit_task_info)
-        container.append(grid)
+        container.append(form_scroller)
         container.append(self.edit_save_button)
         return container
 
@@ -794,10 +813,8 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         if not deleted:
             self.selected_task_id = task_id
             row = self._find_row_by_task_id(task_id)
-            task = self._task_by_id(task_id)
-            if row and task:
+            if row:
                 self.tasks_listbox.select_row(row)
-                self._show_task_popover(row, task)
 
     def _find_row_by_task_id(self, task_id: int) -> Gtk.ListBoxRow | None:
         for row in self.tasks_listbox:
@@ -898,10 +915,9 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.mode_stack.set_visible_child_name("calendar")
 
         row = self._find_row_by_task_id(task_id)
-        task = self._task_by_id(task_id)
-        if row and task:
+        if row:
             self.tasks_listbox.select_row(row)
-            self._show_task_popover(row, task)
+        self._open_full_task_view(task_id)
 
     def _on_create_task_clicked(self, _button: Gtk.Button) -> None:
         title = self.new_title.get_text().strip()
@@ -951,11 +967,9 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.selected_task_id = task_id
 
         row = self._find_row_by_task_id(task_id)
-        task = self._task_by_id(task_id)
-        if row and task:
+        if row:
             self.tasks_listbox.select_row(row)
-            self._show_task_popover(row, task)
-            self.mode_stack.set_visible_child_name("calendar")
+        self._open_full_task_view(task_id)
 
     def _on_new_task_clicked(self, _button: Gtk.Button) -> None:
         self._clear_new_task_form()
