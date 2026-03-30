@@ -3,7 +3,6 @@ from datetime import datetime
 from PySide6.QtCore import QDate, QDateTime, QSettings, QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
-    QCheckBox,
     QComboBox,
     QDateEdit,
     QDateTimeEdit,
@@ -17,6 +16,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QTabBar,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -37,6 +37,11 @@ from app.notifications import send_desktop_notification
 class MainWindow(QMainWindow):
     STATUS_OPTIONS = ["inbox", "in_progress", "done"]
     PRIORITY_OPTIONS = ["low", "normal", "high"]
+    FILTER_KEYS = ["all", "today", "overdue", "no_deadline", "done"]
+    FILTER_LABELS = ["All", "Today", "Overdue", "No deadline", "Done"]
+
+    EMPTY_DATE = QDate(2000, 1, 1)
+    EMPTY_DATETIME = QDateTime(2000, 1, 1, 0, 0)
 
     def __init__(self) -> None:
         super().__init__()
@@ -47,7 +52,7 @@ class MainWindow(QMainWindow):
         self.active_filter = "all"
 
         self.setWindowTitle("My Tasks")
-        self.resize(1080, 700)
+        self.resize(1080, 720)
 
         self._build_ui()
         self._apply_saved_theme()
@@ -76,23 +81,11 @@ class MainWindow(QMainWindow):
         self.theme_selector.currentTextChanged.connect(self.on_theme_changed)
         top_row.addWidget(self.theme_selector)
 
-        filters_row = QHBoxLayout()
-        filters_row.setSpacing(8)
-        self.filter_buttons: dict[str, QPushButton] = {}
-        filters = [
-            ("all", "All"),
-            ("today", "Today"),
-            ("overdue", "Overdue"),
-            ("no_deadline", "No deadline"),
-            ("done", "Done"),
-        ]
-        for key, label in filters:
-            button = QPushButton(label)
-            button.setCheckable(True)
-            button.clicked.connect(lambda _checked, k=key: self.set_filter(k))
-            self.filter_buttons[key] = button
-            filters_row.addWidget(button)
-        filters_row.addStretch()
+        self.filter_tabs = QTabBar()
+        self.filter_tabs.setDrawBase(False)
+        for label in self.FILTER_LABELS:
+            self.filter_tabs.addTab(label)
+        self.filter_tabs.currentChanged.connect(self.on_filter_tab_changed)
 
         content_layout = QHBoxLayout()
         content_layout.setSpacing(14)
@@ -113,31 +106,37 @@ class MainWindow(QMainWindow):
         self.task_description_input.setPlaceholderText("Опис (опційно)")
         self.task_description_input.setFixedHeight(70)
 
+        self.task_tag_input = QLineEdit()
+        self.task_tag_input.setPlaceholderText("Тег (опційно)")
+
         self.create_priority_combo = QComboBox()
         self.create_priority_combo.addItems(self.PRIORITY_OPTIONS)
         self.create_priority_combo.setCurrentText("normal")
 
-        self.create_deadline_enabled = QCheckBox("Додати дедлайн")
-        self.create_deadline_enabled.toggled.connect(self.on_create_deadline_toggled)
-        self.task_deadline_input = QDateEdit()
-        self.task_deadline_input.setCalendarPopup(True)
-        self.task_deadline_input.setDate(QDate.currentDate())
-        self.task_deadline_input.setDisplayFormat("yyyy-MM-dd")
-        self.task_deadline_input.setEnabled(False)
+        self.task_deadline_input = self._build_optional_date_edit()
+        self.task_deadline_clear = QPushButton("Очистити")
+        self.task_deadline_clear.clicked.connect(lambda: self._clear_date_edit(self.task_deadline_input))
 
-        self.create_reminder_enabled = QCheckBox("Додати нагадування")
-        self.create_reminder_enabled.toggled.connect(self.on_create_reminder_toggled)
-        self.task_reminder_input = QDateTimeEdit()
-        self.task_reminder_input.setCalendarPopup(True)
-        self.task_reminder_input.setDateTime(QDateTime.currentDateTime())
-        self.task_reminder_input.setDisplayFormat("yyyy-MM-dd HH:mm")
-        self.task_reminder_input.setEnabled(False)
+        create_deadline_row = QHBoxLayout()
+        create_deadline_row.addWidget(self.task_deadline_input)
+        create_deadline_row.addWidget(self.task_deadline_clear)
+
+        self.task_reminder_input = self._build_optional_datetime_edit()
+        self.task_reminder_clear = QPushButton("Очистити")
+        self.task_reminder_clear.clicked.connect(
+            lambda: self._clear_datetime_edit(self.task_reminder_input)
+        )
+
+        create_reminder_row = QHBoxLayout()
+        create_reminder_row.addWidget(self.task_reminder_input)
+        create_reminder_row.addWidget(self.task_reminder_clear)
 
         create_form.addRow("Назва", self.task_title_input)
         create_form.addRow("Опис", self.task_description_input)
+        create_form.addRow("Тег", self.task_tag_input)
         create_form.addRow("Пріоритет", self.create_priority_combo)
-        create_form.addRow(self.create_deadline_enabled, self.task_deadline_input)
-        create_form.addRow(self.create_reminder_enabled, self.task_reminder_input)
+        create_form.addRow("Дедлайн", create_deadline_row)
+        create_form.addRow("Нагадування", create_reminder_row)
 
         self.add_button = QPushButton("Додати")
         self.add_button.clicked.connect(self.handle_add_task)
@@ -164,6 +163,9 @@ class MainWindow(QMainWindow):
         self.details_description_input = QTextEdit()
         self.details_description_input.setFixedHeight(100)
 
+        self.details_tag_input = QLineEdit()
+        self.details_tag_input.setPlaceholderText("Тег (опційно)")
+
         self.details_status_combo = QComboBox()
         self.details_status_combo.addItems(self.STATUS_OPTIONS)
         self.details_status_combo.currentTextChanged.connect(self.handle_status_changed)
@@ -171,31 +173,36 @@ class MainWindow(QMainWindow):
         self.details_priority_combo = QComboBox()
         self.details_priority_combo.addItems(self.PRIORITY_OPTIONS)
 
-        self.details_deadline_enabled = QCheckBox("Є дедлайн")
-        self.details_deadline_enabled.toggled.connect(self.on_details_deadline_toggled)
-        self.details_deadline_input = QDateEdit()
-        self.details_deadline_input.setCalendarPopup(True)
-        self.details_deadline_input.setDate(QDate.currentDate())
-        self.details_deadline_input.setDisplayFormat("yyyy-MM-dd")
-        self.details_deadline_input.setEnabled(False)
+        self.details_deadline_input = self._build_optional_date_edit()
+        self.details_deadline_clear = QPushButton("Очистити")
+        self.details_deadline_clear.clicked.connect(
+            lambda: self._clear_date_edit(self.details_deadline_input)
+        )
 
-        self.details_reminder_enabled = QCheckBox("Є нагадування")
-        self.details_reminder_enabled.toggled.connect(self.on_details_reminder_toggled)
-        self.details_reminder_input = QDateTimeEdit()
-        self.details_reminder_input.setCalendarPopup(True)
-        self.details_reminder_input.setDateTime(QDateTime.currentDateTime())
-        self.details_reminder_input.setDisplayFormat("yyyy-MM-dd HH:mm")
-        self.details_reminder_input.setEnabled(False)
+        details_deadline_row = QHBoxLayout()
+        details_deadline_row.addWidget(self.details_deadline_input)
+        details_deadline_row.addWidget(self.details_deadline_clear)
+
+        self.details_reminder_input = self._build_optional_datetime_edit()
+        self.details_reminder_clear = QPushButton("Очистити")
+        self.details_reminder_clear.clicked.connect(
+            lambda: self._clear_datetime_edit(self.details_reminder_input)
+        )
+
+        details_reminder_row = QHBoxLayout()
+        details_reminder_row.addWidget(self.details_reminder_input)
+        details_reminder_row.addWidget(self.details_reminder_clear)
 
         self.created_at_label = QLabel("—")
         self.created_at_label.setObjectName("mutedLabel")
 
         details_form.addRow("Назва", self.details_title_input)
         details_form.addRow("Опис", self.details_description_input)
+        details_form.addRow("Тег", self.details_tag_input)
         details_form.addRow("Статус", self.details_status_combo)
         details_form.addRow("Пріоритет", self.details_priority_combo)
-        details_form.addRow(self.details_deadline_enabled, self.details_deadline_input)
-        details_form.addRow(self.details_reminder_enabled, self.details_reminder_input)
+        details_form.addRow("Дедлайн", details_deadline_row)
+        details_form.addRow("Нагадування", details_reminder_row)
         details_form.addRow("Створено", self.created_at_label)
 
         buttons_row = QHBoxLayout()
@@ -218,14 +225,38 @@ class MainWindow(QMainWindow):
         content_layout.addWidget(details_group, 2)
 
         root_layout.addLayout(top_row)
-        root_layout.addLayout(filters_row)
+        root_layout.addWidget(self.filter_tabs)
         root_layout.addLayout(content_layout)
 
         central_widget.setLayout(root_layout)
         self.setCentralWidget(central_widget)
 
         self.set_details_enabled(False)
-        self.set_filter("all")
+        self.filter_tabs.setCurrentIndex(0)
+
+    def _build_optional_date_edit(self) -> QDateEdit:
+        editor = QDateEdit()
+        editor.setCalendarPopup(True)
+        editor.setDisplayFormat("yyyy-MM-dd")
+        editor.setSpecialValueText("—")
+        editor.setMinimumDate(self.EMPTY_DATE)
+        editor.setDate(self.EMPTY_DATE)
+        return editor
+
+    def _build_optional_datetime_edit(self) -> QDateTimeEdit:
+        editor = QDateTimeEdit()
+        editor.setCalendarPopup(True)
+        editor.setDisplayFormat("yyyy-MM-dd HH:mm")
+        editor.setSpecialValueText("—")
+        editor.setMinimumDateTime(self.EMPTY_DATETIME)
+        editor.setDateTime(self.EMPTY_DATETIME)
+        return editor
+
+    def _clear_date_edit(self, editor: QDateEdit) -> None:
+        editor.setDate(self.EMPTY_DATE)
+
+    def _clear_datetime_edit(self, editor: QDateTimeEdit) -> None:
+        editor.setDateTime(self.EMPTY_DATETIME)
 
     def _start_reminder_timer(self) -> None:
         self.reminder_timer = QTimer(self)
@@ -253,10 +284,10 @@ class MainWindow(QMainWindow):
             "Це тестове сповіщення з застосунку",
         )
 
-    def set_filter(self, filter_key: str) -> None:
-        self.active_filter = filter_key
-        for key, button in self.filter_buttons.items():
-            button.setChecked(key == filter_key)
+    def on_filter_tab_changed(self, index: int) -> None:
+        if index < 0 or index >= len(self.FILTER_KEYS):
+            return
+        self.active_filter = self.FILTER_KEYS[index]
         self.load_tasks()
 
     def handle_add_task(self) -> None:
@@ -265,21 +296,16 @@ class MainWindow(QMainWindow):
             return
 
         description = self.task_description_input.toPlainText().strip() or None
+        tag = self.task_tag_input.text().strip() or None
         priority = self.create_priority_combo.currentText()
-        deadline = (
-            self.task_deadline_input.date().toString("yyyy-MM-dd")
-            if self.create_deadline_enabled.isChecked()
-            else None
-        )
-        reminder_at = (
-            self.task_reminder_input.dateTime().toString("yyyy-MM-dd HH:mm")
-            if self.create_reminder_enabled.isChecked()
-            else None
-        )
+
+        deadline = self._date_value_or_none(self.task_deadline_input)
+        reminder_at = self._datetime_value_or_none(self.task_reminder_input)
 
         task_id = add_task(
             title=title,
             description=description,
+            tag=tag,
             deadline=deadline,
             reminder_at=reminder_at,
             priority=priority,
@@ -287,11 +313,10 @@ class MainWindow(QMainWindow):
 
         self.task_title_input.clear()
         self.task_description_input.clear()
+        self.task_tag_input.clear()
         self.create_priority_combo.setCurrentText("normal")
-        self.create_deadline_enabled.setChecked(False)
-        self.task_deadline_input.setDate(QDate.currentDate())
-        self.create_reminder_enabled.setChecked(False)
-        self.task_reminder_input.setDateTime(QDateTime.currentDateTime())
+        self._clear_date_edit(self.task_deadline_input)
+        self._clear_datetime_edit(self.task_reminder_input)
 
         self.load_tasks(select_task_id=task_id)
 
@@ -300,7 +325,10 @@ class MainWindow(QMainWindow):
         tasks = self._apply_filter(get_tasks())
 
         for task in tasks:
-            item = QListWidgetItem(task["title"])
+            text = task["title"]
+            if task.get("tag"):
+                text = f"[{task['tag']}] {text}"
+            item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, task["id"])
             self._style_task_item(item, task)
             self.tasks_list.addItem(item)
@@ -336,6 +364,7 @@ class MainWindow(QMainWindow):
 
         self.details_title_input.setText(selected_task["title"] or "")
         self.details_description_input.setPlainText(selected_task["description"] or "")
+        self.details_tag_input.setText(selected_task["tag"] or "")
         self.details_status_combo.setCurrentText(selected_task["status"] or "inbox")
         self.details_priority_combo.setCurrentText(selected_task["priority"] or "normal")
 
@@ -343,27 +372,21 @@ class MainWindow(QMainWindow):
         if deadline:
             parsed_date = QDate.fromString(deadline, "yyyy-MM-dd")
             if parsed_date.isValid():
-                self.details_deadline_enabled.setChecked(True)
                 self.details_deadline_input.setDate(parsed_date)
             else:
-                self.details_deadline_enabled.setChecked(False)
-                self.details_deadline_input.setDate(QDate.currentDate())
+                self._clear_date_edit(self.details_deadline_input)
         else:
-            self.details_deadline_enabled.setChecked(False)
-            self.details_deadline_input.setDate(QDate.currentDate())
+            self._clear_date_edit(self.details_deadline_input)
 
         reminder_at = selected_task["reminder_at"]
         if reminder_at:
             parsed_datetime = QDateTime.fromString(reminder_at, "yyyy-MM-dd HH:mm")
             if parsed_datetime.isValid():
-                self.details_reminder_enabled.setChecked(True)
                 self.details_reminder_input.setDateTime(parsed_datetime)
             else:
-                self.details_reminder_enabled.setChecked(False)
-                self.details_reminder_input.setDateTime(QDateTime.currentDateTime())
+                self._clear_datetime_edit(self.details_reminder_input)
         else:
-            self.details_reminder_enabled.setChecked(False)
-            self.details_reminder_input.setDateTime(QDateTime.currentDateTime())
+            self._clear_datetime_edit(self.details_reminder_input)
 
         self.created_at_label.setText(self._format_datetime(selected_task["created_at"]))
         self._loading_details = False
@@ -371,12 +394,9 @@ class MainWindow(QMainWindow):
     def handle_status_changed(self) -> None:
         if self._loading_details or self.current_task_id is None:
             return
-        self._save_current_task()
+        self.handle_save_task()
 
     def handle_save_task(self) -> None:
-        self._save_current_task()
-
-    def _save_current_task(self) -> None:
         if self.current_task_id is None:
             return
 
@@ -384,28 +404,15 @@ class MainWindow(QMainWindow):
         if not title:
             return
 
-        description = self.details_description_input.toPlainText().strip() or None
-        status = self.details_status_combo.currentText()
-        priority = self.details_priority_combo.currentText()
-        deadline = (
-            self.details_deadline_input.date().toString("yyyy-MM-dd")
-            if self.details_deadline_enabled.isChecked()
-            else None
-        )
-        reminder_at = (
-            self.details_reminder_input.dateTime().toString("yyyy-MM-dd HH:mm")
-            if self.details_reminder_enabled.isChecked()
-            else None
-        )
-
         update_task(
             task_id=self.current_task_id,
             title=title,
-            description=description,
-            status=status,
-            priority=priority,
-            deadline=deadline,
-            reminder_at=reminder_at,
+            description=self.details_description_input.toPlainText().strip() or None,
+            tag=self.details_tag_input.text().strip() or None,
+            status=self.details_status_combo.currentText(),
+            priority=self.details_priority_combo.currentText(),
+            deadline=self._date_value_or_none(self.details_deadline_input),
+            reminder_at=self._datetime_value_or_none(self.details_reminder_input),
         )
 
         self.load_tasks(select_task_id=self.current_task_id)
@@ -428,17 +435,15 @@ class MainWindow(QMainWindow):
         self.current_task_id = None
         self.load_tasks()
 
-    def on_create_deadline_toggled(self, checked: bool) -> None:
-        self.task_deadline_input.setEnabled(checked)
+    def _date_value_or_none(self, editor: QDateEdit) -> str | None:
+        if editor.date() <= self.EMPTY_DATE:
+            return None
+        return editor.date().toString("yyyy-MM-dd")
 
-    def on_details_deadline_toggled(self, checked: bool) -> None:
-        self.details_deadline_input.setEnabled(checked)
-
-    def on_create_reminder_toggled(self, checked: bool) -> None:
-        self.task_reminder_input.setEnabled(checked)
-
-    def on_details_reminder_toggled(self, checked: bool) -> None:
-        self.details_reminder_input.setEnabled(checked)
+    def _datetime_value_or_none(self, editor: QDateTimeEdit) -> str | None:
+        if editor.dateTime() <= self.EMPTY_DATETIME:
+            return None
+        return editor.dateTime().toString("yyyy-MM-dd HH:mm")
 
     def on_theme_changed(self, theme_name: str) -> None:
         self.settings.setValue("theme", theme_name)
@@ -460,12 +465,13 @@ class MainWindow(QMainWindow):
     def set_details_enabled(self, enabled: bool) -> None:
         self.details_title_input.setEnabled(enabled)
         self.details_description_input.setEnabled(enabled)
+        self.details_tag_input.setEnabled(enabled)
         self.details_status_combo.setEnabled(enabled)
         self.details_priority_combo.setEnabled(enabled)
-        self.details_deadline_enabled.setEnabled(enabled)
-        self.details_deadline_input.setEnabled(enabled and self.details_deadline_enabled.isChecked())
-        self.details_reminder_enabled.setEnabled(enabled)
-        self.details_reminder_input.setEnabled(enabled and self.details_reminder_enabled.isChecked())
+        self.details_deadline_input.setEnabled(enabled)
+        self.details_deadline_clear.setEnabled(enabled)
+        self.details_reminder_input.setEnabled(enabled)
+        self.details_reminder_clear.setEnabled(enabled)
         self.save_button.setEnabled(enabled)
         self.delete_button.setEnabled(enabled)
 
@@ -473,12 +479,11 @@ class MainWindow(QMainWindow):
         self.current_task_id = None
         self.details_title_input.clear()
         self.details_description_input.clear()
+        self.details_tag_input.clear()
         self.details_status_combo.setCurrentText("inbox")
         self.details_priority_combo.setCurrentText("normal")
-        self.details_deadline_enabled.setChecked(False)
-        self.details_deadline_input.setDate(QDate.currentDate())
-        self.details_reminder_enabled.setChecked(False)
-        self.details_reminder_input.setDateTime(QDateTime.currentDateTime())
+        self._clear_date_edit(self.details_deadline_input)
+        self._clear_datetime_edit(self.details_reminder_input)
         self.created_at_label.setText("—")
         self.set_details_enabled(False)
 
@@ -524,7 +529,7 @@ class MainWindow(QMainWindow):
     def _dark_stylesheet(self) -> str:
         return """
         QMainWindow { background-color: #121417; }
-        QLabel, QCheckBox, QGroupBox { color: #EAF0F5; }
+        QLabel, QGroupBox { color: #EAF0F5; }
         QLabel#titleLabel { font-size: 24px; font-weight: 700; }
         QLabel#mutedLabel { color: #A8B4C0; }
         QGroupBox {
@@ -539,12 +544,17 @@ class MainWindow(QMainWindow):
             left: 10px;
             padding: 0 4px;
         }
-        QLineEdit, QTextEdit, QDateEdit, QDateTimeEdit, QComboBox, QListWidget {
+        QLineEdit, QTextEdit, QDateEdit, QDateTimeEdit, QComboBox, QListWidget, QTabBar::tab {
             background-color: #1B2026;
             border: 1px solid #323B45;
             border-radius: 8px;
             color: #EAF0F5;
-            padding: 8px;
+            padding: 7px;
+        }
+        QTabBar::tab:selected {
+            background: #2D6CDF;
+            border-color: #2D6CDF;
+            color: #FFFFFF;
         }
         QPushButton {
             background-color: #2D6CDF;
@@ -556,7 +566,6 @@ class MainWindow(QMainWindow):
         }
         QPushButton:hover { background-color: #3B79E8; }
         QPushButton:pressed { background-color: #245BBE; }
-        QPushButton:checked { background-color: #245BBE; }
         QPushButton#dangerButton { background-color: #B33A3A; }
         QPushButton#dangerButton:hover { background-color: #C24A4A; }
         QListWidget::item { padding: 8px 6px; }
@@ -566,7 +575,7 @@ class MainWindow(QMainWindow):
     def _light_stylesheet(self) -> str:
         return """
         QMainWindow { background-color: #F4F6F8; }
-        QLabel, QCheckBox, QGroupBox { color: #1A2026; }
+        QLabel, QGroupBox { color: #1A2026; }
         QLabel#titleLabel { font-size: 24px; font-weight: 700; }
         QLabel#mutedLabel { color: #5F6D7A; }
         QGroupBox {
@@ -581,12 +590,17 @@ class MainWindow(QMainWindow):
             left: 10px;
             padding: 0 4px;
         }
-        QLineEdit, QTextEdit, QDateEdit, QDateTimeEdit, QComboBox, QListWidget {
+        QLineEdit, QTextEdit, QDateEdit, QDateTimeEdit, QComboBox, QListWidget, QTabBar::tab {
             background-color: white;
             border: 1px solid #CFD8E2;
             border-radius: 8px;
             color: #1A2026;
-            padding: 8px;
+            padding: 7px;
+        }
+        QTabBar::tab:selected {
+            background: #2D6CDF;
+            border-color: #2D6CDF;
+            color: #FFFFFF;
         }
         QPushButton {
             background-color: #2D6CDF;
@@ -598,7 +612,6 @@ class MainWindow(QMainWindow):
         }
         QPushButton:hover { background-color: #3B79E8; }
         QPushButton:pressed { background-color: #245BBE; }
-        QPushButton:checked { background-color: #245BBE; }
         QPushButton#dangerButton { background-color: #B33A3A; }
         QPushButton#dangerButton:hover { background-color: #C24A4A; }
         QListWidget::item { padding: 8px 6px; }

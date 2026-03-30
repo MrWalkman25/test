@@ -15,6 +15,7 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             description TEXT,
+            tag TEXT,
             status TEXT NOT NULL DEFAULT 'inbox',
             priority TEXT NOT NULL DEFAULT 'normal',
             is_done INTEGER NOT NULL DEFAULT 0,
@@ -38,6 +39,9 @@ def _apply_simple_migrations(cursor: sqlite3.Cursor) -> None:
 
     if "description" not in existing_columns:
         cursor.execute("ALTER TABLE tasks ADD COLUMN description TEXT")
+
+    if "tag" not in existing_columns:
+        cursor.execute("ALTER TABLE tasks ADD COLUMN tag TEXT")
 
     if "status" not in existing_columns:
         cursor.execute("ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'inbox'")
@@ -67,6 +71,7 @@ def _apply_simple_migrations(cursor: sqlite3.Cursor) -> None:
 def add_task(
     title: str,
     description: str | None,
+    tag: str | None,
     deadline: str | None,
     reminder_at: str | None,
     priority: str = "normal",
@@ -77,14 +82,15 @@ def add_task(
     cursor.execute(
         """
         INSERT INTO tasks (
-            title, description, status, priority,
+            title, description, tag, status, priority,
             deadline, reminder_at, reminder_shown, created_at
         )
-        VALUES (?, ?, 'inbox', ?, ?, ?, 0, ?)
+        VALUES (?, ?, ?, 'inbox', ?, ?, ?, 0, ?)
         """,
         (
             title,
             description,
+            tag,
             priority,
             deadline,
             reminder_at,
@@ -105,7 +111,7 @@ def get_tasks() -> list[dict]:
     cursor.execute(
         """
         SELECT
-            id, title, description, status, priority,
+            id, title, description, tag, status, priority,
             deadline, reminder_at, reminder_shown, created_at
         FROM tasks
         ORDER BY id DESC
@@ -121,6 +127,7 @@ def update_task(
     task_id: int,
     title: str,
     description: str | None,
+    tag: str | None,
     status: str,
     priority: str,
     deadline: str | None,
@@ -135,6 +142,7 @@ def update_task(
         SET
             title = ?,
             description = ?,
+            tag = ?,
             status = ?,
             priority = ?,
             deadline = ?,
@@ -145,7 +153,17 @@ def update_task(
             END
         WHERE id = ?
         """,
-        (title, description, status, priority, deadline, reminder_at, reminder_at, task_id),
+        (
+            title,
+            description,
+            tag,
+            status,
+            priority,
+            deadline,
+            reminder_at,
+            reminder_at,
+            task_id,
+        ),
     )
 
     connection.commit()
@@ -169,7 +187,7 @@ def get_task_by_id(task_id: int) -> dict | None:
     cursor.execute(
         """
         SELECT
-            id, title, description, status, priority,
+            id, title, description, tag, status, priority,
             deadline, reminder_at, reminder_shown, created_at
         FROM tasks
         WHERE id = ?
@@ -192,7 +210,7 @@ def get_due_reminders(now_iso: str) -> list[dict]:
     cursor.execute(
         """
         SELECT
-            id, title, description, status, priority,
+            id, title, description, tag, status, priority,
             deadline, reminder_at, reminder_shown, created_at
         FROM tasks
         WHERE reminder_at IS NOT NULL
@@ -227,10 +245,11 @@ def _row_to_task(row: tuple) -> dict:
         "id": row[0],
         "title": row[1],
         "description": row[2],
-        "status": row[3],
-        "priority": row[4],
-        "deadline": row[5],
-        "reminder_at": row[6],
-        "reminder_shown": row[7],
-        "created_at": row[8],
+        "tag": row[3],
+        "status": row[4],
+        "priority": row[5],
+        "deadline": row[6],
+        "reminder_at": row[7],
+        "reminder_shown": row[8],
+        "created_at": row[9],
     }
