@@ -5,7 +5,7 @@ gi.require_version("Adw", "1")
 
 from datetime import datetime
 
-from gi.repository import Adw, Gdk, Gtk
+from gi.repository import Adw, Gdk, GLib, Gtk
 
 from app.database import (
     STATUS_CANCELLED,
@@ -31,6 +31,8 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.filtered_tasks: list[dict] = []
         self.selected_task_id: int | None = None
         self.context_task_id: int | None = None
+        self.pending_single_click_source: int | None = None
+        self.pending_single_click_row: Gtk.ListBoxRow | None = None
 
         self._setup_css()
         self._build_ui()
@@ -158,8 +160,10 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.new_task_page = self._build_new_task_page()
 
         self.edit_page = self._build_edit_page()
+        self.task_view_page = self._build_task_view_page()
 
         self.mode_stack.add_titled(self.calendar_placeholder, "calendar", "Calendar")
+        self.mode_stack.add_titled(self.task_view_page, "task", "Task View")
         self.mode_stack.add_titled(self.edit_page, "edit", "Edit Task")
         self.mode_stack.add_titled(self.new_task_page, "new", "New Task")
 
@@ -211,6 +215,9 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             field.set_xalign(0)
             field.add_css_class("popover-row")
 
+        open_button = Gtk.Button(label="Відкрити")
+        open_button.connect("clicked", self._on_popover_open_clicked)
+
         edit_button = Gtk.Button(label="Редагувати")
         edit_button.connect("clicked", self._on_popover_edit_clicked)
 
@@ -223,6 +230,7 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         card.append(self.pop_deadline)
         card.append(self.pop_reminder)
         card.append(self.pop_created)
+        card.append(open_button)
         card.append(edit_button)
 
         popover.set_child(card)
@@ -351,6 +359,52 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         clear_button.connect("clicked", self._on_clear_date_clicked, entry)
         row.append(clear_button)
         return row
+
+    def _build_task_view_page(self) -> Gtk.Box:
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
+
+        title = Gtk.Label(label="Повний перегляд задачі")
+        title.set_xalign(0)
+        title.add_css_class("panel-title")
+
+        self.task_view_title = Gtk.Label()
+        self.task_view_title.set_xalign(0)
+        self.task_view_title.add_css_class("popover-title")
+        self.task_view_description = Gtk.Label()
+        self.task_view_description.set_xalign(0)
+        self.task_view_description.set_wrap(True)
+        self.task_view_tag = Gtk.Label()
+        self.task_view_status = Gtk.Label()
+        self.task_view_priority = Gtk.Label()
+        self.task_view_deadline = Gtk.Label()
+        self.task_view_reminder = Gtk.Label()
+        self.task_view_created = Gtk.Label()
+
+        for field in [
+            self.task_view_tag,
+            self.task_view_status,
+            self.task_view_priority,
+            self.task_view_deadline,
+            self.task_view_reminder,
+            self.task_view_created,
+        ]:
+            field.set_xalign(0)
+
+        open_edit = Gtk.Button(label="Редагувати")
+        open_edit.connect("clicked", self._on_task_view_edit_clicked)
+
+        box.append(title)
+        box.append(self.task_view_title)
+        box.append(self.task_view_description)
+        box.append(Gtk.Separator())
+        box.append(self.task_view_tag)
+        box.append(self.task_view_status)
+        box.append(self.task_view_priority)
+        box.append(self.task_view_deadline)
+        box.append(self.task_view_reminder)
+        box.append(self.task_view_created)
+        box.append(open_edit)
+        return box
 
     def _build_edit_page(self) -> Gtk.Box:
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -524,6 +578,11 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             right_click.connect("pressed", self._on_row_right_click, row)
             row.add_controller(right_click)
 
+            left_click = Gtk.GestureClick.new()
+            left_click.set_button(1)
+            left_click.connect("released", self._on_row_left_click, row)
+            row.add_controller(left_click)
+
             self.tasks_listbox.append(row)
 
             if self.selected_task_id is not None and task["id"] == self.selected_task_id:
@@ -547,14 +606,57 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
 
         task_id = getattr(row, "task_id", None)
         self.selected_task_id = task_id
+
+    def _on_row_left_click(
+        self,
+        _gesture: Gtk.GestureClick,
+        n_press: int,
+        _x: float,
+        _y: float,
+        row: Gtk.ListBoxRow,
+    ) -> None:
+        self.tasks_listbox.select_row(row)
+        task_id = getattr(row, "task_id", None)
+        self.selected_task_id = task_id
+        self.context_popover.popdown()
+
+        if n_press == 2:
+            self._cancel_pending_single_click()
+            self._open_full_task_view(task_id)
+            return
+
+        if n_press == 1:
+            self._cancel_pending_single_click()
+            self.pending_single_click_row = row
+            self.pending_single_click_source = GLib.timeout_add(
+                200, self._run_single_click_action
+            )
+
+    def _cancel_pending_single_click(self) -> None:
+        if self.pending_single_click_source is not None:
+            GLib.source_remove(self.pending_single_click_source)
+            self.pending_single_click_source = None
+            self.pending_single_click_row = None
+
+    def _run_single_click_action(self) -> bool:
+        row = self.pending_single_click_row
+        self.pending_single_click_source = None
+        self.pending_single_click_row = None
+
+        if row is None:
+            return False
+
+        task_id = getattr(row, "task_id", None)
         task = self._task_by_id(task_id)
         if task is None:
             self.task_popover.popdown()
-            return
+            return False
 
         self._show_task_popover(row, task)
+        return False
 
     def _show_task_popover(self, row: Gtk.ListBoxRow, task: dict) -> None:
+        self.context_popover.popdown()
         self.pop_title.set_text(task.get("title") or "—")
         self.pop_description.set_text(f"Опис: {self._fmt(task.get('description'))}")
         self.pop_tag.set_text(f"Тег: {self._fmt(task.get('tag'))}")
@@ -573,6 +675,9 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.task_popover.popdown()
         self._open_edit_mode(self.selected_task_id)
 
+    def _on_popover_open_clicked(self, _button: Gtk.Button) -> None:
+        self._open_full_task_view(self.selected_task_id)
+
     def _on_row_right_click(
         self,
         gesture: Gtk.GestureClick,
@@ -581,9 +686,11 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         y: float,
         row: Gtk.ListBoxRow,
     ) -> None:
+        self._cancel_pending_single_click()
         self.tasks_listbox.select_row(row)
         task_id = getattr(row, "task_id", None)
         self.context_task_id = task_id
+        self.task_popover.popdown()
 
         rect = Gdk.Rectangle()
         rect.x = int(x)
@@ -604,10 +711,7 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             return
 
         if action == "open":
-            row = self._find_row_by_task_id(task_id)
-            task = self._task_by_id(task_id)
-            if row and task:
-                self._show_task_popover(row, task)
+            self._open_full_task_view(task_id)
             return
 
         if action == "edit":
@@ -666,6 +770,31 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             if getattr(row, "task_id", None) == task_id:
                 return row
         return None
+
+    def _open_full_task_view(self, task_id: int | None) -> None:
+        task = self._task_by_id(task_id)
+        if task is None:
+            return
+
+        self.selected_task_id = task["id"]
+        self._fill_task_view(task)
+        self.task_popover.popdown()
+        self.mode_stack.set_visible_child_name("task")
+
+    def _fill_task_view(self, task: dict) -> None:
+        self.task_view_title.set_text(task.get("title") or "—")
+        self.task_view_description.set_text(f"Опис: {self._fmt(task.get('description'))}")
+        self.task_view_tag.set_text(f"Тег: {self._fmt(task.get('tag'))}")
+        self.task_view_status.set_text(f"Статус: {self._effective_status(task)}")
+        self.task_view_priority.set_text(f"Пріоритет: {self._fmt(task.get('priority'))}")
+        self.task_view_deadline.set_text(f"Дедлайн: {self._fmt(task.get('deadline'))}")
+        self.task_view_reminder.set_text(f"Нагадування: {self._fmt(task.get('reminder_at'))}")
+        self.task_view_created.set_text(f"Створено: {self._fmt(task.get('created_at'))}")
+
+    def _on_task_view_edit_clicked(self, _button: Gtk.Button) -> None:
+        if self.selected_task_id is None:
+            return
+        self._open_edit_mode(self.selected_task_id)
 
     def _open_edit_mode(self, task_id: int) -> None:
         task = get_task_by_id(task_id)
