@@ -102,12 +102,18 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             padding: 8px;
             background: alpha(@window_fg_color, 0.03);
         }
+        .calendar-day-box-hover {
+            background: alpha(#4e8ad9, 0.08);
+        }
         .calendar-day-title {
             font-weight: 600;
             opacity: 0.85;
         }
         .mode-button-active {
             background: alpha(#4e8ad9, 0.2);
+        }
+        .calendar-chip:hover {
+            background: alpha(#4e8ad9, 0.24);
         }
         """
         provider = Gtk.CssProvider()
@@ -655,6 +661,9 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.calendar_title.set_text(self.calendar_focus_date.strftime("%B %Y"))
         grid = Gtk.Grid(column_spacing=6, row_spacing=6)
         grid.set_column_homogeneous(True)
+        grid.set_row_homogeneous(True)
+        grid.set_hexpand(True)
+        grid.set_vexpand(True)
 
         week_days = ["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Нд"]
         for i, wd in enumerate(week_days):
@@ -666,6 +675,10 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             self.calendar_focus_date.year,
             self.calendar_focus_date.month,
         )
+        while len(month_matrix) < 6:
+            last = month_matrix[-1][-1]
+            month_matrix.append([last + timedelta(days=i) for i in range(1, 8)])
+
         for row_i, week in enumerate(month_matrix, start=1):
             for col_i, day_date in enumerate(week):
                 day_widget = self._build_day_cell(day_date, compact=True)
@@ -681,13 +694,15 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.calendar_title.set_text(
             f"Тиждень: {week_start.isoformat()} — {week_end.isoformat()}"
         )
-        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        grid = Gtk.Grid(column_spacing=6, row_spacing=6)
+        grid.set_column_homogeneous(True)
+        grid.set_hexpand(True)
+        grid.set_vexpand(True)
         for i in range(7):
             day_date = week_start + timedelta(days=i)
             day_widget = self._build_day_cell(day_date, compact=False)
-            day_widget.set_hexpand(True)
-            row.append(day_widget)
-        self.calendar_content.append(row)
+            grid.attach(day_widget, i, 0, 1, 1)
+        self.calendar_content.append(grid)
 
     def _render_today_view(self) -> None:
         today = date.today()
@@ -707,26 +722,40 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
     def _build_day_cell(self, day_date: date, compact: bool) -> Gtk.Box:
         day_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
         day_box.add_css_class("calendar-day-box")
+        day_box.set_hexpand(True)
+        day_box.set_vexpand(True)
+        day_box.set_size_request(-1, 128 if compact else 220)
         title = Gtk.Label(label=day_date.strftime("%d.%m (%a)"))
         title.set_xalign(0)
         title.add_css_class("calendar-day-title")
         day_box.append(title)
 
+        chips_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=3)
+        chips_box.set_vexpand(True)
+        chips_box.set_valign(Gtk.Align.START)
+
         tasks = self._tasks_for_date(day_date)
         limit = 3 if compact else 8
         for task in tasks[:limit]:
-            day_box.append(self._build_task_chip(task, day_date, emphasize=not compact))
+            chips_box.append(self._build_task_chip(task, day_date, emphasize=not compact))
 
         if len(tasks) > limit:
             more = Gtk.Label(label=f"+{len(tasks) - limit} ще")
             more.set_xalign(0)
             more.add_css_class("muted-text")
-            day_box.append(more)
+            chips_box.append(more)
+
+        day_box.append(chips_box)
 
         day_double_click = Gtk.GestureClick.new()
         day_double_click.set_button(1)
         day_double_click.connect("released", self._on_day_cell_clicked, day_date)
         day_box.add_controller(day_double_click)
+
+        motion = Gtk.EventControllerMotion()
+        motion.connect("enter", self._on_day_hover_enter, day_box)
+        motion.connect("leave", self._on_day_hover_leave, day_box)
+        day_box.add_controller(motion)
         return day_box
 
     def _build_task_chip(self, task: dict, day_date: date, emphasize: bool) -> Gtk.Button:
@@ -758,6 +787,12 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         if n_press == 2:
             self.day_plan_date = day_date
             self._render_calendar()
+
+    def _on_day_hover_enter(self, _controller: Gtk.EventControllerMotion, _x: float, _y: float, day_box: Gtk.Box) -> None:
+        day_box.add_css_class("calendar-day-box-hover")
+
+    def _on_day_hover_leave(self, _controller: Gtk.EventControllerMotion, day_box: Gtk.Box) -> None:
+        day_box.remove_css_class("calendar-day-box-hover")
 
     def _on_calendar_task_clicked(
         self,
