@@ -60,6 +60,10 @@ class MainWindow(QMainWindow):
         top_row.addWidget(title_label)
         top_row.addStretch()
 
+        self.test_notification_button = QPushButton("Тест сповіщення")
+        self.test_notification_button.clicked.connect(self.handle_test_notification)
+        top_row.addWidget(self.test_notification_button)
+
         top_row.addWidget(QLabel("Theme:"))
         self.theme_selector = QComboBox()
         self.theme_selector.addItems(["Dark", "Light"])
@@ -202,6 +206,13 @@ class MainWindow(QMainWindow):
             sent = send_desktop_notification(task["title"], message)
             if sent:
                 mark_reminder_shown(task["id"])
+
+
+    def handle_test_notification(self) -> None:
+        send_desktop_notification(
+            "Test notification",
+            "Це тестове сповіщення з застосунку",
+        )
 
     def handle_add_task(self) -> None:
         title = self.task_title_input.text().strip()
