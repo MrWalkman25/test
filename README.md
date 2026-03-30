@@ -1,28 +1,43 @@
 # Local Task Manager
 
-Локальний desktop task manager на **Python + PySide6 + SQLite**.
+Локальний desktop task manager (поточна версія на PySide6 + SQLite) + паралельний GTK skeleton для міграції.
 
-## Основний запуск (рекомендовано)
-1. Перейдіть у папку проєкту:
-   ```bash
-   cd /workspace/test
-   ```
-2. Запустіть:
-   ```bash
-   ./start.sh
-   ```
+## Основний запуск поточної Qt-версії
+```bash
+./start.sh
+```
 
-`start.sh` працює так:
-- якщо `.venv` ще немає — створює `.venv`, встановлює залежності і запускає застосунок;
-- якщо `.venv` вже є — просто запускає застосунок.
+## Запуск GTK skeleton (перший етап міграції)
+```bash
+./start_gtk.sh
+```
+
+### Системні пакети для GTK4 + libadwaita (Ubuntu / Zorin OS)
+```bash
+sudo apt update
+sudo apt install -y \
+  python3-gi \
+  python3-gi-cairo \
+  gir1.2-gtk-4.0 \
+  gir1.2-adw-1 \
+  libadwaita-1-0 \
+  libgtk-4-1 \
+  libnotify-bin
+```
+
+## Що вже є в GTK skeleton
+- `Adw.Application` + `Adw.ApplicationWindow`
+- HeaderBar
+- двоколонковий layout:
+  - вузька ліва панель (місце під фільтри + список задач + кнопка нової задачі)
+  - велика права область (Stack: calendar/details/new placeholders)
+- читання задач із поточної SQLite БД та показ у лівому списку
 
 ## Legacy-скрипти
-- `setup.sh` і `run.sh` залишені для сумісності,
-  але основний спосіб запуску — `./start.sh`.
+- `setup.sh` і `run.sh` залишені для сумісності.
 
 ## Нагадування (Linux)
 - Для системних сповіщень використовується команда `notify-send`.
 - На більшості Linux-дистрибутивів вона доступна через пакет `libnotify-bin`.
-- Якщо сповіщення не з'являються, перевірте, чи встановлено `notify-send`.
 
 Після першого запуску в корені проєкту з'явиться файл `tasks.db`.
