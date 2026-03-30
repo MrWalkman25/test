@@ -17,6 +17,8 @@ def init_db() -> None:
             description TEXT,
             is_done INTEGER NOT NULL DEFAULT 0,
             deadline TEXT,
+            reminder_at TEXT,
+            reminder_shown INTEGER NOT NULL DEFAULT 0,
             created_at TEXT NOT NULL
         )
         """
@@ -38,6 +40,12 @@ def _apply_simple_migrations(cursor: sqlite3.Cursor) -> None:
     if "deadline" not in existing_columns:
         cursor.execute("ALTER TABLE tasks ADD COLUMN deadline TEXT")
 
+    if "reminder_at" not in existing_columns:
+        cursor.execute("ALTER TABLE tasks ADD COLUMN reminder_at TEXT")
+
+    if "reminder_shown" not in existing_columns:
+        cursor.execute("ALTER TABLE tasks ADD COLUMN reminder_shown INTEGER NOT NULL DEFAULT 0")
+
     if "created_at" not in existing_columns:
         cursor.execute(
             "ALTER TABLE tasks ADD COLUMN created_at TEXT NOT NULL DEFAULT ''"
@@ -48,16 +56,25 @@ def _apply_simple_migrations(cursor: sqlite3.Cursor) -> None:
         )
 
 
-def add_task(title: str, description: str | None, deadline: str | None) -> int:
+def add_task(
+    title: str,
+    description: str | None,
+    deadline: str | None,
+    reminder_at: str | None,
+) -> int:
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
 
     cursor.execute(
-        "INSERT INTO tasks (title, description, deadline, created_at) VALUES (?, ?, ?, ?)",
+        """
+        INSERT INTO tasks (title, description, deadline, reminder_at, reminder_shown, created_at)
+        VALUES (?, ?, ?, ?, 0, ?)
+        """,
         (
             title,
             description,
             deadline,
+            reminder_at,
             datetime.now(timezone.utc).isoformat(),
         ),
     )
@@ -73,34 +90,35 @@ def get_tasks() -> list[dict]:
     cursor = connection.cursor()
 
     cursor.execute(
-        "SELECT id, title, description, deadline, created_at FROM tasks ORDER BY id DESC"
+        """
+        SELECT id, title, description, deadline, reminder_at, reminder_shown, created_at
+        FROM tasks
+        ORDER BY id DESC
+        """
     )
     rows = cursor.fetchall()
 
     connection.close()
-    return [
-        {
-            "id": row[0],
-            "title": row[1],
-            "description": row[2],
-            "deadline": row[3],
-            "created_at": row[4],
-        }
-        for row in rows
-    ]
+    return [_row_to_task(row) for row in rows]
 
 
-def update_task(task_id: int, title: str, description: str | None, deadline: str | None) -> None:
+def update_task(
+    task_id: int,
+    title: str,
+    description: str | None,
+    deadline: str | None,
+    reminder_at: str | None,
+) -> None:
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
 
     cursor.execute(
         """
         UPDATE tasks
-        SET title = ?, description = ?, deadline = ?
+        SET title = ?, description = ?, deadline = ?, reminder_at = ?, reminder_shown = 0
         WHERE id = ?
         """,
-        (title, description, deadline, task_id),
+        (title, description, deadline, reminder_at, task_id),
     )
 
     connection.commit()
@@ -122,7 +140,11 @@ def get_task_by_id(task_id: int) -> dict | None:
     cursor = connection.cursor()
 
     cursor.execute(
-        "SELECT id, title, description, deadline, created_at FROM tasks WHERE id = ?",
+        """
+        SELECT id, title, description, deadline, reminder_at, reminder_shown, created_at
+        FROM tasks
+        WHERE id = ?
+        """,
         (task_id,),
     )
     row = cursor.fetchone()
@@ -131,10 +153,51 @@ def get_task_by_id(task_id: int) -> dict | None:
     if row is None:
         return None
 
+    return _row_to_task(row)
+
+
+def get_due_reminders(now_iso: str) -> list[dict]:
+    connection = sqlite3.connect(DB_PATH)
+    cursor = connection.cursor()
+
+    cursor.execute(
+        """
+        SELECT id, title, description, deadline, reminder_at, reminder_shown, created_at
+        FROM tasks
+        WHERE reminder_at IS NOT NULL
+          AND reminder_at != ''
+          AND reminder_shown = 0
+          AND reminder_at <= ?
+        ORDER BY reminder_at ASC
+        """,
+        (now_iso,),
+    )
+    rows = cursor.fetchall()
+
+    connection.close()
+    return [_row_to_task(row) for row in rows]
+
+
+def mark_reminder_shown(task_id: int) -> None:
+    connection = sqlite3.connect(DB_PATH)
+    cursor = connection.cursor()
+
+    cursor.execute(
+        "UPDATE tasks SET reminder_shown = 1 WHERE id = ?",
+        (task_id,),
+    )
+
+    connection.commit()
+    connection.close()
+
+
+def _row_to_task(row: tuple) -> dict:
     return {
         "id": row[0],
         "title": row[1],
         "description": row[2],
         "deadline": row[3],
-        "created_at": row[4],
+        "reminder_at": row[4],
+        "reminder_shown": row[5],
+        "created_at": row[6],
     }
