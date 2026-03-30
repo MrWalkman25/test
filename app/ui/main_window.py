@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from PySide6.QtCore import QDate, QDateTime, QSettings, QTimer, Qt
+from PySide6.QtCore import QDate, QDateTime, QSettings, QTime, QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QComboBox,
@@ -41,7 +41,7 @@ class MainWindow(QMainWindow):
     FILTER_LABELS = ["All", "Today", "Overdue", "No deadline", "Done"]
 
     EMPTY_DATE = QDate(2000, 1, 1)
-    EMPTY_DATETIME = QDateTime(2000, 1, 1, 0, 0)
+    EMPTY_DATETIME = QDateTime(QDate(2000, 1, 1), QTime(0, 0))
 
     def __init__(self) -> None:
         super().__init__()
