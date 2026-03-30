@@ -13,6 +13,7 @@ from app.database import (
     STATUS_IN_PROGRESS,
     STATUS_NEW,
     STATUS_OVERDUE,
+    add_task,
     delete_task,
     get_task_by_id,
     get_tasks,
@@ -154,14 +155,13 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         )
         self.calendar_placeholder.set_wrap(True)
 
-        self.new_task_placeholder = Gtk.Label(label="New task view (placeholder на цьому етапі)")
-        self.new_task_placeholder.set_wrap(True)
+        self.new_task_page = self._build_new_task_page()
 
         self.edit_page = self._build_edit_page()
 
         self.mode_stack.add_titled(self.calendar_placeholder, "calendar", "Calendar")
         self.mode_stack.add_titled(self.edit_page, "edit", "Edit Task")
-        self.mode_stack.add_titled(self.new_task_placeholder, "new", "New Task")
+        self.mode_stack.add_titled(self.new_task_page, "new", "New Task")
 
         stack_switcher = Gtk.StackSwitcher(stack=self.mode_stack)
 
@@ -252,6 +252,105 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
 
         popover.set_child(box)
         return popover
+
+    def _build_new_task_page(self) -> Gtk.Box:
+        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+        container.set_size_request(520, -1)
+
+        title = Gtk.Label(label="Створення нової задачі")
+        title.set_xalign(0)
+        title.add_css_class("panel-title")
+
+        self.new_form_error = Gtk.Label()
+        self.new_form_error.set_xalign(0)
+        self.new_form_error.add_css_class("overdue-text")
+
+        grid = Gtk.Grid(column_spacing=8, row_spacing=8)
+
+        self.new_title = Gtk.Entry()
+        self.new_title.set_placeholder_text("Обов'язково")
+
+        self.new_description = Gtk.TextView()
+        self.new_description.set_vexpand(True)
+        self.new_description.set_size_request(-1, 120)
+
+        self.new_tag = Gtk.Entry()
+
+        self.new_status_model = Gtk.StringList.new([
+            STATUS_NEW,
+            STATUS_IN_PROGRESS,
+            STATUS_DONE,
+            STATUS_CANCELLED,
+        ])
+        self.new_status = Gtk.DropDown(model=self.new_status_model)
+        self.new_status.set_selected(0)
+
+        self.new_priority_model = Gtk.StringList.new(["low", "normal", "high"])
+        self.new_priority = Gtk.DropDown(model=self.new_priority_model)
+        self.new_priority.set_selected(1)
+
+        self.new_deadline_entry = Gtk.Entry()
+        self.new_deadline_entry.set_placeholder_text("YYYY-MM-DD")
+        deadline_row = self._build_date_input_row(
+            self.new_deadline_entry,
+            self._on_new_deadline_pick,
+            with_now_button=False,
+        )
+
+        self.new_reminder_entry = Gtk.Entry()
+        self.new_reminder_entry.set_placeholder_text("YYYY-MM-DDTHH:MM")
+        reminder_row = self._build_date_input_row(
+            self.new_reminder_entry,
+            self._on_new_reminder_pick,
+            with_now_button=True,
+        )
+
+        rows: list[tuple[str, Gtk.Widget]] = [
+            ("Назва", self.new_title),
+            ("Опис", self.new_description),
+            ("Тег", self.new_tag),
+            ("Статус", self.new_status),
+            ("Пріоритет", self.new_priority),
+            ("Дедлайн", deadline_row),
+            ("Нагадування", reminder_row),
+        ]
+
+        for i, (label_text, widget) in enumerate(rows):
+            label = Gtk.Label(label=label_text)
+            label.set_xalign(0)
+            grid.attach(label, 0, i, 1, 1)
+            grid.attach(widget, 1, i, 1, 1)
+
+        self.create_task_button = Gtk.Button(label="Створити задачу")
+        self.create_task_button.connect("clicked", self._on_create_task_clicked)
+
+        container.append(title)
+        container.append(self.new_form_error)
+        container.append(grid)
+        container.append(self.create_task_button)
+        return container
+
+    def _build_date_input_row(
+        self,
+        entry: Gtk.Entry,
+        pick_callback,
+        with_now_button: bool,
+    ) -> Gtk.Box:
+        row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        row.append(entry)
+
+        pick_button = Gtk.Button(label="Обрати")
+        pick_button.connect("clicked", pick_callback)
+        row.append(pick_button)
+
+        today_button = Gtk.Button(label="Сьогодні")
+        today_button.connect("clicked", self._on_today_clicked, entry, with_now_button)
+        row.append(today_button)
+
+        clear_button = Gtk.Button(label="Очистити")
+        clear_button.connect("clicked", self._on_clear_date_clicked, entry)
+        row.append(clear_button)
+        return row
 
     def _build_edit_page(self) -> Gtk.Box:
         container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
@@ -641,8 +740,150 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             self.tasks_listbox.select_row(row)
             self._show_task_popover(row, task)
 
+    def _on_create_task_clicked(self, _button: Gtk.Button) -> None:
+        title = self.new_title.get_text().strip()
+        if not title:
+            self.new_form_error.set_text("Назва задачі є обов'язковою.")
+            return
+
+        description_buffer = self.new_description.get_buffer()
+        start = description_buffer.get_start_iter()
+        end = description_buffer.get_end_iter()
+        description = description_buffer.get_text(start, end, True).strip() or None
+
+        tag = self.new_tag.get_text().strip() or None
+        status_idx = self.new_status.get_selected()
+        status = self.new_status_model.get_string(status_idx) or STATUS_NEW
+        priority_idx = self.new_priority.get_selected()
+        priority = self.new_priority_model.get_string(priority_idx) or "normal"
+        deadline = self.new_deadline_entry.get_text().strip() or None
+        reminder = self.new_reminder_entry.get_text().strip() or None
+
+        task_id = add_task(
+            title=title,
+            description=description,
+            tag=tag,
+            deadline=deadline,
+            reminder_at=reminder,
+            priority=priority,
+        )
+
+        if status != STATUS_NEW:
+            created_task = get_task_by_id(task_id)
+            if created_task is not None:
+                update_task(
+                    task_id=task_id,
+                    title=created_task.get("title") or title,
+                    description=created_task.get("description"),
+                    tag=created_task.get("tag"),
+                    status=status,
+                    priority=created_task.get("priority") or priority,
+                    deadline=created_task.get("deadline"),
+                    reminder_at=created_task.get("reminder_at"),
+                )
+
+        self.new_form_error.set_text("")
+        self._clear_new_task_form()
+        self._load_tasks()
+        self.selected_task_id = task_id
+
+        row = self._find_row_by_task_id(task_id)
+        task = self._task_by_id(task_id)
+        if row and task:
+            self.tasks_listbox.select_row(row)
+            self._show_task_popover(row, task)
+            self.mode_stack.set_visible_child_name("calendar")
+
     def _on_new_task_clicked(self, _button: Gtk.Button) -> None:
+        self._clear_new_task_form()
+        self.new_form_error.set_text("")
         self.mode_stack.set_visible_child_name("new")
+
+    def _clear_new_task_form(self) -> None:
+        self.new_title.set_text("")
+        self.new_tag.set_text("")
+        self.new_deadline_entry.set_text("")
+        self.new_reminder_entry.set_text("")
+        self.new_status.set_selected(0)
+        self.new_priority.set_selected(1)
+        description_buffer = self.new_description.get_buffer()
+        description_buffer.set_text("")
+
+    def _on_new_deadline_pick(self, button: Gtk.Button) -> None:
+        self._show_calendar_picker(button, self.new_deadline_entry, include_time=False)
+
+    def _on_new_reminder_pick(self, button: Gtk.Button) -> None:
+        self._show_calendar_picker(button, self.new_reminder_entry, include_time=True)
+
+    def _show_calendar_picker(self, parent: Gtk.Button, entry: Gtk.Entry, include_time: bool) -> None:
+        popover = Gtk.Popover()
+        popover.set_parent(parent)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        box.add_css_class("popover-card")
+
+        calendar = Gtk.Calendar()
+        box.append(calendar)
+
+        hour = Gtk.SpinButton.new_with_range(0, 23, 1)
+        minute = Gtk.SpinButton.new_with_range(0, 59, 1)
+        now = datetime.now()
+        hour.set_value(now.hour)
+        minute.set_value(now.minute)
+
+        if include_time:
+            time_row = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+            time_row.append(Gtk.Label(label="Година"))
+            time_row.append(hour)
+            time_row.append(Gtk.Label(label="Хвилина"))
+            time_row.append(minute)
+            box.append(time_row)
+
+        apply_button = Gtk.Button(label="Готово")
+        apply_button.connect(
+            "clicked",
+            self._on_picker_apply_clicked,
+            calendar,
+            entry,
+            include_time,
+            hour,
+            minute,
+            popover,
+        )
+        box.append(apply_button)
+
+        popover.set_child(box)
+        popover.popup()
+
+    def _on_picker_apply_clicked(
+        self,
+        _button: Gtk.Button,
+        calendar: Gtk.Calendar,
+        entry: Gtk.Entry,
+        include_time: bool,
+        hour: Gtk.SpinButton,
+        minute: Gtk.SpinButton,
+        popover: Gtk.Popover,
+    ) -> None:
+        selected = calendar.get_date()
+        date_str = f"{selected.get_year():04d}-{selected.get_month() + 1:02d}-{selected.get_day_of_month():02d}"
+
+        if include_time:
+            entry.set_text(f"{date_str}T{int(hour.get_value()):02d}:{int(minute.get_value()):02d}")
+        else:
+            entry.set_text(date_str)
+
+        popover.popdown()
+
+    def _on_today_clicked(self, _button: Gtk.Button, entry: Gtk.Entry, with_time: bool) -> None:
+        now = datetime.now()
+        if with_time:
+            entry.set_text(now.strftime("%Y-%m-%dT%H:%M"))
+        else:
+            entry.set_text(now.strftime("%Y-%m-%d"))
+
+    def _on_clear_date_clicked(self, _button: Gtk.Button, entry: Gtk.Entry) -> None:
+        entry.set_text("")
 
     def _fmt(self, value: str | None) -> str:
         return value if value else "—"
