@@ -1,13 +1,14 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from PySide6.QtCore import QDate, QDateTime, QSettings, QTimer, Qt
-from PySide6.QtGui import QColor
+from PySide6.QtGui import QColor, QTextCharFormat
 from PySide6.QtWidgets import (
     QCalendarWidget,
     QComboBox,
     QDateEdit,
     QDateTimeEdit,
     QFormLayout,
+    QFrame,
     QGroupBox,
     QHBoxLayout,
     QLabel,
@@ -17,14 +18,22 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QStackedWidget,
     QTabBar,
+    QTableWidget,
+    QTableWidgetItem,
     QTextEdit,
     QVBoxLayout,
     QWidget,
 )
 
 from app.database import (
+    STATUS_CANCELLED,
+    STATUS_DONE,
+    STATUS_IN_PROGRESS,
+    STATUS_NEW,
+    STATUS_OVERDUE,
     add_task,
     delete_task,
     get_due_reminders,
@@ -37,14 +46,18 @@ from app.notifications import send_desktop_notification
 
 
 class MainWindow(QMainWindow):
-    STATUS_OPTIONS = ["inbox", "in_progress", "done"]
+    MANUAL_STATUS_OPTIONS = [STATUS_NEW, STATUS_IN_PROGRESS, STATUS_DONE, STATUS_CANCELLED]
     PRIORITY_OPTIONS = ["low", "normal", "high"]
     FILTER_KEYS = ["all", "today", "overdue", "no_deadline", "done"]
     FILTER_LABELS = ["All", "Today", "Overdue", "No deadline", "Done"]
 
-    PAGE_DETAILS = 0
+    PAGE_TASK_CARD = 0
     PAGE_CALENDAR = 1
     PAGE_NEW = 2
+
+    CAL_MONTH = 0
+    CAL_WEEK = 1
+    CAL_DAY = 2
 
     def __init__(self) -> None:
         super().__init__()
@@ -59,8 +72,11 @@ class MainWindow(QMainWindow):
         self.details_deadline_active = False
         self.details_reminder_active = False
 
+        self.current_week_anchor = QDate.currentDate()
+        self.day_plan_date = QDate.currentDate()
+
         self.setWindowTitle("My Tasks")
-        self.resize(1140, 740)
+        self.resize(1200, 760)
 
         self._build_ui()
         self._apply_saved_theme()
@@ -68,41 +84,37 @@ class MainWindow(QMainWindow):
         self._start_reminder_timer()
 
     def _build_ui(self) -> None:
-        central_widget = QWidget()
+        root = QWidget()
         root_layout = QVBoxLayout()
-        root_layout.setContentsMargins(14, 14, 14, 14)
+        root_layout.setContentsMargins(12, 12, 12, 12)
         root_layout.setSpacing(10)
 
-        top_row = QHBoxLayout()
-        title_label = QLabel("My Tasks")
-        title_label.setObjectName("titleLabel")
-        top_row.addWidget(title_label)
-        top_row.addStretch()
+        top = QHBoxLayout()
+        title = QLabel("My Tasks")
+        title.setObjectName("titleLabel")
+        top.addWidget(title)
+        top.addStretch()
 
         self.test_notification_button = QPushButton("Тест сповіщення")
         self.test_notification_button.clicked.connect(self.handle_test_notification)
-        top_row.addWidget(self.test_notification_button)
+        top.addWidget(self.test_notification_button)
 
-        top_row.addWidget(QLabel("Theme:"))
+        top.addWidget(QLabel("Theme:"))
         self.theme_selector = QComboBox()
         self.theme_selector.addItems(["Dark", "Light"])
         self.theme_selector.currentTextChanged.connect(self.on_theme_changed)
-        top_row.addWidget(self.theme_selector)
+        top.addWidget(self.theme_selector)
 
-        body = QHBoxLayout()
-        body.setSpacing(12)
-
-        left_panel = self._build_left_panel()
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self._build_left_panel())
         self.right_stack = self._build_right_panel()
+        splitter.addWidget(self.right_stack)
+        splitter.setSizes([300, 900])
 
-        body.addWidget(left_panel, 2)
-        body.addWidget(self.right_stack, 3)
-
-        root_layout.addLayout(top_row)
-        root_layout.addLayout(body)
-
-        central_widget.setLayout(root_layout)
-        self.setCentralWidget(central_widget)
+        root_layout.addLayout(top)
+        root_layout.addWidget(splitter)
+        root.setLayout(root_layout)
+        self.setCentralWidget(root)
 
     def _build_left_panel(self) -> QWidget:
         panel = QWidget()
@@ -115,63 +127,67 @@ class MainWindow(QMainWindow):
         for label in self.FILTER_LABELS:
             self.filter_tabs.addTab(label)
         self.filter_tabs.currentChanged.connect(self.on_filter_tab_changed)
-        layout.addWidget(self.filter_tabs)
 
-        filters_row = QHBoxLayout()
+        filters = QHBoxLayout()
         self.status_filter_combo = QComboBox()
-        self.status_filter_combo.addItems(["all_statuses", *self.STATUS_OPTIONS])
-        self.status_filter_combo.currentTextChanged.connect(lambda _v: self.load_tasks())
+        self.status_filter_combo.addItems(["all_statuses", *self.MANUAL_STATUS_OPTIONS, STATUS_OVERDUE])
+        self.status_filter_combo.currentTextChanged.connect(lambda _x: self.load_tasks())
 
         self.tag_filter_combo = QComboBox()
         self.tag_filter_combo.addItem("all_tags")
-        self.tag_filter_combo.currentTextChanged.connect(lambda _v: self.load_tasks())
+        self.tag_filter_combo.currentTextChanged.connect(lambda _x: self.load_tasks())
 
-        filters_row.addWidget(QLabel("Status:"))
-        filters_row.addWidget(self.status_filter_combo)
-        filters_row.addWidget(QLabel("Tag:"))
-        filters_row.addWidget(self.tag_filter_combo)
-        layout.addLayout(filters_row)
+        filters.addWidget(QLabel("Статус"))
+        filters.addWidget(self.status_filter_combo)
+        filters.addWidget(QLabel("Тег"))
+        filters.addWidget(self.tag_filter_combo)
 
         self.tasks_list = QListWidget()
         self.tasks_list.currentItemChanged.connect(self.on_task_selected)
-        layout.addWidget(self.tasks_list)
 
         actions = QHBoxLayout()
         self.new_task_button = QPushButton("+ Нова задача")
         self.new_task_button.clicked.connect(lambda: self.open_right_page(self.PAGE_NEW))
-
         self.calendar_button = QPushButton("Календар")
         self.calendar_button.clicked.connect(lambda: self.open_right_page(self.PAGE_CALENDAR))
-
         actions.addWidget(self.new_task_button)
         actions.addWidget(self.calendar_button)
-        layout.addLayout(actions)
 
+        layout.addWidget(self.filter_tabs)
+        layout.addLayout(filters)
+        layout.addWidget(self.tasks_list)
+        layout.addLayout(actions)
         panel.setLayout(layout)
         return panel
 
     def _build_right_panel(self) -> QStackedWidget:
         stack = QStackedWidget()
-        stack.addWidget(self._build_details_page())
+        stack.addWidget(self._build_task_card_page())
         stack.addWidget(self._build_calendar_page())
         stack.addWidget(self._build_new_task_page())
-        stack.setCurrentIndex(self.PAGE_DETAILS)
+        stack.setCurrentIndex(self.PAGE_CALENDAR)
         return stack
 
-    def _build_details_page(self) -> QWidget:
+    def _build_task_card_page(self) -> QWidget:
         page = QWidget()
         layout = QVBoxLayout()
 
-        group = QGroupBox("Task details")
-        form = QFormLayout()
+        card = QFrame()
+        card.setObjectName("taskCard")
+        card_layout = QVBoxLayout()
 
+        header = QLabel("Task card")
+        header.setObjectName("cardTitle")
+        card_layout.addWidget(header)
+
+        form = QFormLayout()
         self.details_title_input = QLineEdit()
         self.details_description_input = QTextEdit()
-        self.details_description_input.setFixedHeight(90)
+        self.details_description_input.setFixedHeight(80)
         self.details_tag_input = QLineEdit()
 
         self.details_status_combo = QComboBox()
-        self.details_status_combo.addItems(self.STATUS_OPTIONS)
+        self.details_status_combo.addItems(self.MANUAL_STATUS_OPTIONS)
         self.details_status_combo.currentTextChanged.connect(self.handle_status_changed)
 
         self.details_priority_combo = QComboBox()
@@ -182,38 +198,32 @@ class MainWindow(QMainWindow):
         self.details_deadline_input.setDate(QDate.currentDate())
         self.details_deadline_input.setDisplayFormat("yyyy-MM-dd")
         self.details_deadline_input.dateChanged.connect(lambda _d: self._set_details_deadline_active(True))
-
-        self.details_deadline_state = QLabel("Не задано")
-        self.details_deadline_state.setObjectName("mutedLabel")
         self.details_deadline_today = QPushButton("Сьогодні")
         self.details_deadline_today.clicked.connect(self.set_details_deadline_today)
         self.details_deadline_clear = QPushButton("Очистити")
         self.details_deadline_clear.clicked.connect(self.clear_details_deadline)
-        details_deadline_row = QHBoxLayout()
-        details_deadline_row.addWidget(self.details_deadline_input)
-        details_deadline_row.addWidget(self.details_deadline_today)
-        details_deadline_row.addWidget(self.details_deadline_clear)
+        drow = QHBoxLayout()
+        drow.addWidget(self.details_deadline_input)
+        drow.addWidget(self.details_deadline_today)
+        drow.addWidget(self.details_deadline_clear)
 
         self.details_reminder_input = QDateTimeEdit()
         self.details_reminder_input.setCalendarPopup(True)
         self.details_reminder_input.setDateTime(QDateTime.currentDateTime())
         self.details_reminder_input.setDisplayFormat("yyyy-MM-dd HH:mm")
-        self.details_reminder_input.dateTimeChanged.connect(
-            lambda _dt: self._set_details_reminder_active(True)
-        )
-
-        self.details_reminder_state = QLabel("Не задано")
-        self.details_reminder_state.setObjectName("mutedLabel")
+        self.details_reminder_input.dateTimeChanged.connect(lambda _d: self._set_details_reminder_active(True))
         self.details_reminder_today = QPushButton("Сьогодні")
         self.details_reminder_today.clicked.connect(self.set_details_reminder_now)
         self.details_reminder_clear = QPushButton("Очистити")
         self.details_reminder_clear.clicked.connect(self.clear_details_reminder)
-        details_reminder_row = QHBoxLayout()
-        details_reminder_row.addWidget(self.details_reminder_input)
-        details_reminder_row.addWidget(self.details_reminder_today)
-        details_reminder_row.addWidget(self.details_reminder_clear)
+        rrow = QHBoxLayout()
+        rrow.addWidget(self.details_reminder_input)
+        rrow.addWidget(self.details_reminder_today)
+        rrow.addWidget(self.details_reminder_clear)
 
-        self.created_at_label = QLabel("—")
+        self.status_preview_label = QLabel("Статус: —")
+        self.status_preview_label.setObjectName("mutedLabel")
+        self.created_at_label = QLabel("Створено: —")
         self.created_at_label.setObjectName("mutedLabel")
 
         form.addRow("Назва", self.details_title_input)
@@ -221,29 +231,25 @@ class MainWindow(QMainWindow):
         form.addRow("Тег", self.details_tag_input)
         form.addRow("Статус", self.details_status_combo)
         form.addRow("Пріоритет", self.details_priority_combo)
-        form.addRow("Дедлайн", details_deadline_row)
-        form.addRow("Стан дедлайну", self.details_deadline_state)
-        form.addRow("Нагадування", details_reminder_row)
-        form.addRow("Стан нагадування", self.details_reminder_state)
-        form.addRow("Створено", self.created_at_label)
+        form.addRow("Дедлайн", drow)
+        form.addRow("Нагадування", rrow)
 
         buttons = QHBoxLayout()
         self.save_button = QPushButton("Зберегти")
         self.save_button.clicked.connect(self.handle_save_task)
-
         self.delete_button = QPushButton("Видалити")
         self.delete_button.setObjectName("dangerButton")
         self.delete_button.clicked.connect(self.handle_delete_task)
-
         buttons.addWidget(self.save_button)
         buttons.addWidget(self.delete_button)
 
-        group_layout = QVBoxLayout()
-        group_layout.addLayout(form)
-        group_layout.addLayout(buttons)
-        group.setLayout(group_layout)
+        card_layout.addLayout(form)
+        card_layout.addWidget(self.status_preview_label)
+        card_layout.addWidget(self.created_at_label)
+        card_layout.addLayout(buttons)
+        card.setLayout(card_layout)
 
-        layout.addWidget(group)
+        layout.addWidget(card)
         layout.addStretch()
         page.setLayout(layout)
         return page
@@ -269,51 +275,50 @@ class MainWindow(QMainWindow):
         self.new_deadline_input.setDate(QDate.currentDate())
         self.new_deadline_input.setDisplayFormat("yyyy-MM-dd")
         self.new_deadline_input.dateChanged.connect(lambda _d: self._set_new_deadline_active(True))
-
-        self.new_deadline_state = QLabel("Не задано")
-        self.new_deadline_state.setObjectName("mutedLabel")
         self.new_deadline_today = QPushButton("Сьогодні")
         self.new_deadline_today.clicked.connect(self.set_new_deadline_today)
         self.new_deadline_clear = QPushButton("Очистити")
         self.new_deadline_clear.clicked.connect(self.clear_new_deadline)
-        new_deadline_row = QHBoxLayout()
-        new_deadline_row.addWidget(self.new_deadline_input)
-        new_deadline_row.addWidget(self.new_deadline_today)
-        new_deadline_row.addWidget(self.new_deadline_clear)
+        ndrow = QHBoxLayout()
+        ndrow.addWidget(self.new_deadline_input)
+        ndrow.addWidget(self.new_deadline_today)
+        ndrow.addWidget(self.new_deadline_clear)
 
         self.new_reminder_input = QDateTimeEdit()
         self.new_reminder_input.setCalendarPopup(True)
         self.new_reminder_input.setDateTime(QDateTime.currentDateTime())
         self.new_reminder_input.setDisplayFormat("yyyy-MM-dd HH:mm")
-        self.new_reminder_input.dateTimeChanged.connect(lambda _dt: self._set_new_reminder_active(True))
-
-        self.new_reminder_state = QLabel("Не задано")
-        self.new_reminder_state.setObjectName("mutedLabel")
+        self.new_reminder_input.dateTimeChanged.connect(lambda _d: self._set_new_reminder_active(True))
         self.new_reminder_today = QPushButton("Сьогодні")
         self.new_reminder_today.clicked.connect(self.set_new_reminder_now)
         self.new_reminder_clear = QPushButton("Очистити")
         self.new_reminder_clear.clicked.connect(self.clear_new_reminder)
-        new_reminder_row = QHBoxLayout()
-        new_reminder_row.addWidget(self.new_reminder_input)
-        new_reminder_row.addWidget(self.new_reminder_today)
-        new_reminder_row.addWidget(self.new_reminder_clear)
+        nrrow = QHBoxLayout()
+        nrrow.addWidget(self.new_reminder_input)
+        nrrow.addWidget(self.new_reminder_today)
+        nrrow.addWidget(self.new_reminder_clear)
+
+        self.new_deadline_state = QLabel("Не задано")
+        self.new_deadline_state.setObjectName("mutedLabel")
+        self.new_reminder_state = QLabel("Не задано")
+        self.new_reminder_state.setObjectName("mutedLabel")
 
         form.addRow("Назва", self.new_title_input)
         form.addRow("Опис", self.new_description_input)
         form.addRow("Тег", self.new_tag_input)
         form.addRow("Пріоритет", self.new_priority_combo)
-        form.addRow("Дедлайн", new_deadline_row)
+        form.addRow("Дедлайн", ndrow)
         form.addRow("Стан дедлайну", self.new_deadline_state)
-        form.addRow("Нагадування", new_reminder_row)
+        form.addRow("Нагадування", nrrow)
         form.addRow("Стан нагадування", self.new_reminder_state)
 
-        self.create_task_button = QPushButton("Створити задачу")
+        self.create_task_button = QPushButton("Створити")
         self.create_task_button.clicked.connect(self.handle_add_task)
 
-        group_layout = QVBoxLayout()
-        group_layout.addLayout(form)
-        group_layout.addWidget(self.create_task_button)
-        group.setLayout(group_layout)
+        gl = QVBoxLayout()
+        gl.addLayout(form)
+        gl.addWidget(self.create_task_button)
+        group.setLayout(gl)
 
         layout.addWidget(group)
         layout.addStretch()
@@ -324,22 +329,53 @@ class MainWindow(QMainWindow):
         page = QWidget()
         layout = QVBoxLayout()
 
-        group = QGroupBox("Calendar view")
-        group_layout = QVBoxLayout()
+        controls = QHBoxLayout()
+        self.btn_today = QPushButton("Сьогодні")
+        self.btn_today.clicked.connect(self.calendar_go_today)
+        self.btn_week = QPushButton("Тиждень")
+        self.btn_week.setCheckable(True)
+        self.btn_week.clicked.connect(lambda: self.set_calendar_mode(self.CAL_WEEK))
+        self.btn_month = QPushButton("Місяць")
+        self.btn_month.setCheckable(True)
+        self.btn_month.clicked.connect(lambda: self.set_calendar_mode(self.CAL_MONTH))
+        self.btn_back = QPushButton("Назад")
+        self.btn_back.clicked.connect(self.back_from_day_plan)
+        self.btn_back.setVisible(False)
+        controls.addWidget(self.btn_today)
+        controls.addWidget(self.btn_week)
+        controls.addWidget(self.btn_month)
+        controls.addWidget(self.btn_back)
+        controls.addStretch()
 
-        self.calendar_widget = QCalendarWidget()
-        self.calendar_widget.setSelectedDate(QDate.currentDate())
-        self.calendar_widget.selectionChanged.connect(self.refresh_calendar_list)
+        self.calendar_mode_stack = QStackedWidget()
 
-        self.calendar_tasks_list = QListWidget()
+        # Month mode
+        self.month_calendar = QCalendarWidget()
+        self.month_calendar.setGridVisible(True)
+        self.month_calendar.setVerticalHeaderFormat(QCalendarWidget.VerticalHeaderFormat.NoVerticalHeader)
+        self.month_calendar.setSelectedDate(QDate.currentDate())
+        self.month_calendar.activated.connect(self.open_day_plan)
 
-        group_layout.addWidget(self.calendar_widget)
-        group_layout.addWidget(QLabel("Задачі на обрану дату:"))
-        group_layout.addWidget(self.calendar_tasks_list)
-        group.setLayout(group_layout)
+        # Week mode
+        self.week_table = QTableWidget(1, 7)
+        self.week_table.verticalHeader().setVisible(False)
+        self.week_table.horizontalHeader().setStretchLastSection(True)
+        self.week_table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.week_table.setSelectionMode(QTableWidget.SelectionMode.NoSelection)
+        self.week_table.cellDoubleClicked.connect(self.open_day_plan_from_week)
 
-        layout.addWidget(group)
+        # Day plan mode
+        self.day_plan_list = QListWidget()
+
+        self.calendar_mode_stack.addWidget(self.month_calendar)
+        self.calendar_mode_stack.addWidget(self.week_table)
+        self.calendar_mode_stack.addWidget(self.day_plan_list)
+
+        layout.addLayout(controls)
+        layout.addWidget(self.calendar_mode_stack)
         page.setLayout(layout)
+
+        self.set_calendar_mode(self.CAL_MONTH)
         return page
 
     def _start_reminder_timer(self) -> None:
@@ -351,48 +387,45 @@ class MainWindow(QMainWindow):
 
     def check_due_reminders(self) -> None:
         now_iso = datetime.now().strftime("%Y-%m-%d %H:%M")
-        due_tasks = get_due_reminders(now_iso)
-
-        for task in due_tasks:
+        for task in get_due_reminders(now_iso):
             message = "Час виконати задачу."
             if task["description"]:
                 message = f"Час виконати задачу: {task['description'][:80]}"
-
             sent = send_desktop_notification(task["title"], message)
             if sent:
                 mark_reminder_shown(task["id"])
 
     def handle_test_notification(self) -> None:
-        send_desktop_notification(
-            "Test notification",
-            "Це тестове сповіщення з застосунку",
-        )
+        send_desktop_notification("Test notification", "Це тестове сповіщення з застосунку")
 
-    def open_right_page(self, page_index: int) -> None:
-        self.right_stack.setCurrentIndex(page_index)
-        if page_index == self.PAGE_CALENDAR:
-            self.refresh_calendar_list()
+    def open_right_page(self, index: int) -> None:
+        self.right_stack.setCurrentIndex(index)
+        if index == self.PAGE_CALENDAR:
+            self.refresh_calendar_visuals()
 
     def on_filter_tab_changed(self, index: int) -> None:
-        if index < 0 or index >= len(self.FILTER_KEYS):
-            return
-        self.active_filter = self.FILTER_KEYS[index]
-        self.load_tasks()
+        if 0 <= index < len(self.FILTER_KEYS):
+            self.active_filter = self.FILTER_KEYS[index]
+            self.load_tasks()
 
     def _refresh_tag_filter_options(self, tasks: list[dict]) -> None:
         current = self.tag_filter_combo.currentText()
         tags = sorted({task["tag"] for task in tasks if task.get("tag")})
-
         self.tag_filter_combo.blockSignals(True)
         self.tag_filter_combo.clear()
         self.tag_filter_combo.addItem("all_tags")
-        for tag in tags:
-            self.tag_filter_combo.addItem(tag)
-        if current in ["all_tags", *tags]:
-            self.tag_filter_combo.setCurrentText(current)
-        else:
-            self.tag_filter_combo.setCurrentText("all_tags")
+        self.tag_filter_combo.addItems(tags)
+        self.tag_filter_combo.setCurrentText(current if current in ["all_tags", *tags] else "all_tags")
         self.tag_filter_combo.blockSignals(False)
+
+    def _effective_status(self, task: dict) -> str:
+        deadline = task.get("deadline")
+        status = task.get("status") or STATUS_NEW
+        if status in {STATUS_DONE, STATUS_CANCELLED}:
+            return status
+        if deadline and deadline < QDate.currentDate().toString("yyyy-MM-dd"):
+            return STATUS_OVERDUE
+        return status
 
     def handle_add_task(self) -> None:
         title = self.new_title_input.text().strip()
@@ -403,16 +436,8 @@ class MainWindow(QMainWindow):
             title=title,
             description=self.new_description_input.toPlainText().strip() or None,
             tag=self.new_tag_input.text().strip() or None,
-            deadline=(
-                self.new_deadline_input.date().toString("yyyy-MM-dd")
-                if self.new_deadline_active
-                else None
-            ),
-            reminder_at=(
-                self.new_reminder_input.dateTime().toString("yyyy-MM-dd HH:mm")
-                if self.new_reminder_active
-                else None
-            ),
+            deadline=self.new_deadline_input.date().toString("yyyy-MM-dd") if self.new_deadline_active else None,
+            reminder_at=self.new_reminder_input.dateTime().toString("yyyy-MM-dd HH:mm") if self.new_reminder_active else None,
             priority=self.new_priority_combo.currentText(),
         )
 
@@ -424,7 +449,7 @@ class MainWindow(QMainWindow):
         self.clear_new_reminder()
 
         self.load_tasks(select_task_id=task_id)
-        self.open_right_page(self.PAGE_DETAILS)
+        self.open_right_page(self.PAGE_TASK_CARD)
 
     def load_tasks(self, select_task_id: int | None = None) -> None:
         all_tasks = get_tasks()
@@ -433,17 +458,19 @@ class MainWindow(QMainWindow):
 
         self.tasks_list.clear()
         for task in tasks:
+            effective_status = self._effective_status(task)
             text = task["title"]
             if task.get("tag"):
                 text = f"[{task['tag']}] {text}"
+            text = f"{text}  ·  {effective_status}"
             item = QListWidgetItem(text)
             item.setData(Qt.ItemDataRole.UserRole, task["id"])
-            self._style_task_item(item, task)
+            self._style_task_item(item, task, effective_status)
             self.tasks_list.addItem(item)
 
         if self.tasks_list.count() == 0:
-            self.show_empty_details()
-            self.refresh_calendar_list()
+            self.show_empty_card()
+            self.refresh_calendar_visuals()
             return
 
         if select_task_id is not None:
@@ -451,56 +478,61 @@ class MainWindow(QMainWindow):
                 item = self.tasks_list.item(i)
                 if item.data(Qt.ItemDataRole.UserRole) == select_task_id:
                     self.tasks_list.setCurrentRow(i)
-                    self.refresh_calendar_list()
+                    self.refresh_calendar_visuals()
                     return
 
         self.tasks_list.setCurrentRow(0)
-        self.refresh_calendar_list()
+        self.refresh_calendar_visuals()
 
     def on_task_selected(self, current: QListWidgetItem | None) -> None:
         if current is None:
-            self.show_empty_details()
+            self.show_empty_card()
             return
 
         task_id = current.data(Qt.ItemDataRole.UserRole)
-        selected_task = get_task_by_id(task_id)
-
-        if selected_task is None:
-            self.show_empty_details()
+        task = get_task_by_id(task_id)
+        if task is None:
+            self.show_empty_card()
             return
 
-        self.current_task_id = selected_task["id"]
+        self.current_task_id = task["id"]
         self._loading_details = True
-        self.set_details_enabled(True)
+        self.set_card_enabled(True)
 
-        self.details_title_input.setText(selected_task["title"] or "")
-        self.details_description_input.setPlainText(selected_task["description"] or "")
-        self.details_tag_input.setText(selected_task["tag"] or "")
-        self.details_status_combo.setCurrentText(selected_task["status"] or "inbox")
-        self.details_priority_combo.setCurrentText(selected_task["priority"] or "normal")
+        self.details_title_input.setText(task["title"] or "")
+        self.details_description_input.setPlainText(task["description"] or "")
+        self.details_tag_input.setText(task["tag"] or "")
 
-        deadline = selected_task.get("deadline")
+        effective_status = self._effective_status(task)
+        manual_status = task.get("status") if task.get("status") in self.MANUAL_STATUS_OPTIONS else STATUS_NEW
+        self.details_status_combo.setCurrentText(manual_status)
+        self.details_priority_combo.setCurrentText(task.get("priority") or "normal")
+
+        deadline = task.get("deadline")
         if deadline:
-            parsed_date = QDate.fromString(deadline, "yyyy-MM-dd")
-            self.details_deadline_input.setDate(parsed_date if parsed_date.isValid() else QDate.currentDate())
+            d = QDate.fromString(deadline, "yyyy-MM-dd")
+            self.details_deadline_input.setDate(d if d.isValid() else QDate.currentDate())
             self._set_details_deadline_active(True)
         else:
             self.clear_details_deadline()
 
-        reminder_at = selected_task.get("reminder_at")
-        if reminder_at:
-            parsed_dt = QDateTime.fromString(reminder_at, "yyyy-MM-dd HH:mm")
-            self.details_reminder_input.setDateTime(
-                parsed_dt if parsed_dt.isValid() else QDateTime.currentDateTime()
-            )
+        reminder = task.get("reminder_at")
+        if reminder:
+            dt = QDateTime.fromString(reminder, "yyyy-MM-dd HH:mm")
+            self.details_reminder_input.setDateTime(dt if dt.isValid() else QDateTime.currentDateTime())
             self._set_details_reminder_active(True)
         else:
             self.clear_details_reminder()
 
-        self.created_at_label.setText(self._format_datetime(selected_task["created_at"]))
-        self._loading_details = False
+        self.status_preview_label.setText(f"Статус: {effective_status}")
+        if effective_status == STATUS_OVERDUE:
+            self.status_preview_label.setStyleSheet("color: #ff7b7b;")
+        else:
+            self.status_preview_label.setStyleSheet("")
+        self.created_at_label.setText(f"Створено: {self._format_datetime(task.get('created_at'))}")
 
-        self.open_right_page(self.PAGE_DETAILS)
+        self._loading_details = False
+        self.open_right_page(self.PAGE_TASK_CARD)
 
     def handle_status_changed(self) -> None:
         if self._loading_details or self.current_task_id is None:
@@ -522,16 +554,8 @@ class MainWindow(QMainWindow):
             tag=self.details_tag_input.text().strip() or None,
             status=self.details_status_combo.currentText(),
             priority=self.details_priority_combo.currentText(),
-            deadline=(
-                self.details_deadline_input.date().toString("yyyy-MM-dd")
-                if self.details_deadline_active
-                else None
-            ),
-            reminder_at=(
-                self.details_reminder_input.dateTime().toString("yyyy-MM-dd HH:mm")
-                if self.details_reminder_active
-                else None
-            ),
+            deadline=self.details_deadline_input.date().toString("yyyy-MM-dd") if self.details_deadline_active else None,
+            reminder_at=self.details_reminder_input.dateTime().toString("yyyy-MM-dd HH:mm") if self.details_reminder_active else None,
         )
 
         self.load_tasks(select_task_id=self.current_task_id)
@@ -539,7 +563,6 @@ class MainWindow(QMainWindow):
     def handle_delete_task(self) -> None:
         if self.current_task_id is None:
             return
-
         answer = QMessageBox.question(
             self,
             "Підтвердження",
@@ -549,11 +572,11 @@ class MainWindow(QMainWindow):
         )
         if answer != QMessageBox.StandardButton.Yes:
             return
-
         delete_task(self.current_task_id)
         self.current_task_id = None
         self.load_tasks()
 
+    # date helpers
     def set_new_deadline_today(self) -> None:
         self.new_deadline_input.setDate(QDate.currentDate())
         self._set_new_deadline_active(True)
@@ -588,7 +611,6 @@ class MainWindow(QMainWindow):
 
     def _set_details_deadline_active(self, active: bool) -> None:
         self.details_deadline_active = active
-        self.details_deadline_state.setText("Активно" if active else "Не задано")
 
     def set_details_reminder_now(self) -> None:
         self.details_reminder_input.setDateTime(QDateTime.currentDateTime())
@@ -600,14 +622,113 @@ class MainWindow(QMainWindow):
 
     def _set_details_reminder_active(self, active: bool) -> None:
         self.details_reminder_active = active
-        self.details_reminder_state.setText("Активно" if active else "Не задано")
 
-    def refresh_calendar_list(self) -> None:
-        selected_date = self.calendar_widget.selectedDate().toString("yyyy-MM-dd")
-        self.calendar_tasks_list.clear()
+    # calendar modes
+    def set_calendar_mode(self, mode: int) -> None:
+        self.calendar_mode_stack.setCurrentIndex(mode)
+        self.btn_week.setChecked(mode == self.CAL_WEEK)
+        self.btn_month.setChecked(mode == self.CAL_MONTH)
+        self.btn_back.setVisible(mode == self.CAL_DAY)
+        self.refresh_calendar_visuals()
+
+    def calendar_go_today(self) -> None:
+        today = QDate.currentDate()
+        self.month_calendar.setSelectedDate(today)
+        self.current_week_anchor = today
+        if self.calendar_mode_stack.currentIndex() == self.CAL_DAY:
+            self.day_plan_date = today
+            self.refresh_day_plan()
+        else:
+            self.refresh_calendar_visuals()
+
+    def open_day_plan(self, date: QDate) -> None:
+        self.day_plan_date = date
+        self.set_calendar_mode(self.CAL_DAY)
+
+    def open_day_plan_from_week(self, _row: int, col: int) -> None:
+        start = self._start_of_week(self.current_week_anchor)
+        self.day_plan_date = start.addDays(col)
+        self.set_calendar_mode(self.CAL_DAY)
+
+    def back_from_day_plan(self) -> None:
+        self.set_calendar_mode(self.CAL_MONTH)
+
+    def _start_of_week(self, date: QDate) -> QDate:
+        return date.addDays(-(date.dayOfWeek() - 1))
+
+    def refresh_calendar_visuals(self) -> None:
+        mode = self.calendar_mode_stack.currentIndex()
+        if mode == self.CAL_MONTH:
+            self._refresh_month_view()
+        elif mode == self.CAL_WEEK:
+            self._refresh_week_view()
+        elif mode == self.CAL_DAY:
+            self.refresh_day_plan()
+
+    def _refresh_month_view(self) -> None:
+        # reset formats
+        default_format = QTextCharFormat()
+        for i in range(1, 32):
+            self.month_calendar.setDateTextFormat(
+                QDate(self.month_calendar.selectedDate().year(), self.month_calendar.selectedDate().month(), min(i, 28)).addDays(i - 1),
+                default_format,
+            )
+
+        task_map: dict[str, list[dict]] = {}
         for task in get_tasks():
-            if task.get("deadline") == selected_date:
-                self.calendar_tasks_list.addItem(task["title"])
+            d = task.get("deadline")
+            if d:
+                task_map.setdefault(d, []).append(task)
+
+        for day_str, tasks in task_map.items():
+            day = QDate.fromString(day_str, "yyyy-MM-dd")
+            if not day.isValid():
+                continue
+            fmt = QTextCharFormat()
+            overdue = any(self._effective_status(t) == STATUS_OVERDUE for t in tasks)
+            done_or_cancelled = all(self._effective_status(t) in {STATUS_DONE, STATUS_CANCELLED} for t in tasks)
+            if overdue:
+                fmt.setBackground(QColor("#5a1f1f"))
+            elif done_or_cancelled:
+                fmt.setBackground(QColor("#2e3f2e"))
+            else:
+                fmt.setBackground(QColor("#2d6cdf"))
+            self.month_calendar.setDateTextFormat(day, fmt)
+
+    def _refresh_week_view(self) -> None:
+        tasks = get_tasks()
+        start = self._start_of_week(self.current_week_anchor)
+        self.week_table.setRowCount(1)
+        self.week_table.setColumnCount(7)
+
+        for col in range(7):
+            day = start.addDays(col)
+            day_str = day.toString("yyyy-MM-dd")
+            self.week_table.setHorizontalHeaderItem(col, QTableWidgetItem(day.toString("dd MMM")))
+
+            day_tasks = [t for t in tasks if t.get("deadline") == day_str]
+            lines = []
+            for task in day_tasks[:3]:
+                status = self._effective_status(task)
+                lines.append(f"• {task['title']} ({status})")
+            if len(day_tasks) > 3:
+                lines.append(f"+{len(day_tasks)-3} ще")
+            cell = QTableWidgetItem("\n".join(lines))
+            if any(self._effective_status(t) == STATUS_OVERDUE for t in day_tasks):
+                cell.setBackground(QColor("#5a1f1f"))
+            elif day_tasks and all(self._effective_status(t) in {STATUS_DONE, STATUS_CANCELLED} for t in day_tasks):
+                cell.setBackground(QColor("#2e3f2e"))
+            self.week_table.setItem(0, col, cell)
+
+    def refresh_day_plan(self) -> None:
+        self.day_plan_list.clear()
+        d = self.day_plan_date.toString("yyyy-MM-dd")
+        tasks = [t for t in get_tasks() if t.get("deadline") == d]
+        for task in tasks:
+            status = self._effective_status(task)
+            item = QListWidgetItem(f"{task['title']} · {status}")
+            self._style_task_item(item, task, status)
+            self.day_plan_list.addItem(item)
 
     def on_theme_changed(self, theme_name: str) -> None:
         self.settings.setValue("theme", theme_name)
@@ -621,12 +742,9 @@ class MainWindow(QMainWindow):
         self.apply_theme(theme_name)
 
     def apply_theme(self, theme_name: str) -> None:
-        if theme_name == "Light":
-            self.setStyleSheet(self._light_stylesheet())
-        else:
-            self.setStyleSheet(self._dark_stylesheet())
+        self.setStyleSheet(self._light_stylesheet() if theme_name == "Light" else self._dark_stylesheet())
 
-    def set_details_enabled(self, enabled: bool) -> None:
+    def set_card_enabled(self, enabled: bool) -> None:
         self.details_title_input.setEnabled(enabled)
         self.details_description_input.setEnabled(enabled)
         self.details_tag_input.setEnabled(enabled)
@@ -641,17 +759,18 @@ class MainWindow(QMainWindow):
         self.save_button.setEnabled(enabled)
         self.delete_button.setEnabled(enabled)
 
-    def show_empty_details(self) -> None:
+    def show_empty_card(self) -> None:
         self.current_task_id = None
         self.details_title_input.clear()
         self.details_description_input.clear()
         self.details_tag_input.clear()
-        self.details_status_combo.setCurrentText("inbox")
+        self.details_status_combo.setCurrentText(STATUS_NEW)
         self.details_priority_combo.setCurrentText("normal")
         self.clear_details_deadline()
         self.clear_details_reminder()
-        self.created_at_label.setText("—")
-        self.set_details_enabled(False)
+        self.status_preview_label.setText("Статус: —")
+        self.created_at_label.setText("Створено: —")
+        self.set_card_enabled(False)
 
     def _apply_filter(self, tasks: list[dict]) -> list[dict]:
         today = QDate.currentDate().toString("yyyy-MM-dd")
@@ -659,44 +778,40 @@ class MainWindow(QMainWindow):
         tag_filter = self.tag_filter_combo.currentText()
 
         filtered = tasks
-
         if self.active_filter == "done":
-            filtered = [task for task in filtered if task.get("status") == "done"]
+            filtered = [t for t in filtered if self._effective_status(t) == STATUS_DONE]
         elif self.active_filter == "today":
-            filtered = [task for task in filtered if task.get("deadline") == today]
+            filtered = [t for t in filtered if t.get("deadline") == today]
         elif self.active_filter == "no_deadline":
-            filtered = [task for task in filtered if not task.get("deadline")]
+            filtered = [t for t in filtered if not t.get("deadline")]
         elif self.active_filter == "overdue":
-            filtered = [
-                task
-                for task in filtered
-                if task.get("deadline")
-                and task["deadline"] < today
-                and task.get("status") != "done"
-            ]
+            filtered = [t for t in filtered if self._effective_status(t) == STATUS_OVERDUE]
 
         if status_filter != "all_statuses":
-            filtered = [task for task in filtered if task.get("status") == status_filter]
-
+            filtered = [t for t in filtered if self._effective_status(t) == status_filter]
         if tag_filter != "all_tags":
-            filtered = [task for task in filtered if task.get("tag") == tag_filter]
+            filtered = [t for t in filtered if t.get("tag") == tag_filter]
 
         return filtered
 
-    def _style_task_item(self, item: QListWidgetItem, task: dict) -> None:
+    def _style_task_item(self, item: QListWidgetItem, task: dict, effective_status: str) -> None:
         priority = task.get("priority", "normal")
+        if effective_status == STATUS_OVERDUE:
+            item.setForeground(QColor("#ff7b7b"))
+            return
+        if effective_status in {STATUS_DONE, STATUS_CANCELLED}:
+            item.setForeground(QColor("#8aa08a"))
+            return
         if priority == "high":
-            item.setForeground(QColor("#ff9b9b"))
+            item.setForeground(QColor("#ffb3b3"))
         elif priority == "low":
             item.setForeground(QColor("#9aa4af"))
 
     def _format_datetime(self, value: str | None) -> str:
         if not value:
             return "—"
-
         try:
-            parsed = datetime.fromisoformat(value)
-            return parsed.strftime("%Y-%m-%d %H:%M")
+            return datetime.fromisoformat(value).strftime("%Y-%m-%d %H:%M")
         except ValueError:
             return value
 
@@ -706,44 +821,30 @@ class MainWindow(QMainWindow):
         QLabel, QGroupBox { color: #EAF0F5; }
         QLabel#titleLabel { font-size: 24px; font-weight: 700; }
         QLabel#mutedLabel { color: #A8B4C0; }
+        QLabel#cardTitle { font-size: 18px; font-weight: 600; }
+        QFrame#taskCard {
+            background: #171b20;
+            border: 1px solid #2b323a;
+            border-radius: 12px;
+            padding: 8px;
+        }
         QGroupBox {
             border: 1px solid #2B323A;
             border-radius: 10px;
             margin-top: 8px;
             padding: 10px;
-            font-weight: 600;
         }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 4px;
-        }
-        QLineEdit, QTextEdit, QDateEdit, QDateTimeEdit, QComboBox, QListWidget, QTabBar::tab, QCalendarWidget {
+        QLineEdit, QTextEdit, QDateEdit, QDateTimeEdit, QComboBox, QListWidget, QTabBar::tab, QCalendarWidget, QTableWidget {
             background-color: #1B2026;
             border: 1px solid #323B45;
             border-radius: 8px;
             color: #EAF0F5;
             padding: 6px;
         }
-        QTabBar::tab:selected {
-            background: #2D6CDF;
-            border-color: #2D6CDF;
-            color: #FFFFFF;
-        }
-        QPushButton {
-            background-color: #2D6CDF;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 7px 10px;
-            font-weight: 600;
-        }
+        QTabBar::tab:selected { background: #2D6CDF; color: #FFFFFF; }
+        QPushButton { background-color: #2D6CDF; color: white; border: none; border-radius: 8px; padding: 7px 10px; }
         QPushButton:hover { background-color: #3B79E8; }
-        QPushButton:pressed { background-color: #245BBE; }
         QPushButton#dangerButton { background-color: #B33A3A; }
-        QPushButton#dangerButton:hover { background-color: #C24A4A; }
-        QListWidget::item { padding: 8px 6px; }
-        QListWidget::item:selected { background-color: #28415D; }
         """
 
     def _light_stylesheet(self) -> str:
@@ -752,42 +853,28 @@ class MainWindow(QMainWindow):
         QLabel, QGroupBox { color: #1A2026; }
         QLabel#titleLabel { font-size: 24px; font-weight: 700; }
         QLabel#mutedLabel { color: #5F6D7A; }
+        QLabel#cardTitle { font-size: 18px; font-weight: 600; }
+        QFrame#taskCard {
+            background: #ffffff;
+            border: 1px solid #d5dde5;
+            border-radius: 12px;
+            padding: 8px;
+        }
         QGroupBox {
             border: 1px solid #D5DDE5;
             border-radius: 10px;
             margin-top: 8px;
             padding: 10px;
-            font-weight: 600;
         }
-        QGroupBox::title {
-            subcontrol-origin: margin;
-            left: 10px;
-            padding: 0 4px;
-        }
-        QLineEdit, QTextEdit, QDateEdit, QDateTimeEdit, QComboBox, QListWidget, QTabBar::tab, QCalendarWidget {
+        QLineEdit, QTextEdit, QDateEdit, QDateTimeEdit, QComboBox, QListWidget, QTabBar::tab, QCalendarWidget, QTableWidget {
             background-color: white;
             border: 1px solid #CFD8E2;
             border-radius: 8px;
             color: #1A2026;
             padding: 6px;
         }
-        QTabBar::tab:selected {
-            background: #2D6CDF;
-            border-color: #2D6CDF;
-            color: #FFFFFF;
-        }
-        QPushButton {
-            background-color: #2D6CDF;
-            color: white;
-            border: none;
-            border-radius: 8px;
-            padding: 7px 10px;
-            font-weight: 600;
-        }
+        QTabBar::tab:selected { background: #2D6CDF; color: #FFFFFF; }
+        QPushButton { background-color: #2D6CDF; color: white; border: none; border-radius: 8px; padding: 7px 10px; }
         QPushButton:hover { background-color: #3B79E8; }
-        QPushButton:pressed { background-color: #245BBE; }
         QPushButton#dangerButton { background-color: #B33A3A; }
-        QPushButton#dangerButton:hover { background-color: #C24A4A; }
-        QListWidget::item { padding: 8px 6px; }
-        QListWidget::item:selected { background-color: #DCE9F8; }
         """

@@ -4,6 +4,13 @@ from pathlib import Path
 
 DB_PATH = Path(__file__).resolve().parent.parent / "tasks.db"
 
+STATUS_NEW = "Нове"
+STATUS_IN_PROGRESS = "В процесі"
+STATUS_DONE = "Завершене"
+STATUS_CANCELLED = "Відмінене"
+STATUS_OVERDUE = "Протерміноване"
+
+
 
 def init_db() -> None:
     connection = sqlite3.connect(DB_PATH)
@@ -16,7 +23,7 @@ def init_db() -> None:
             title TEXT NOT NULL,
             description TEXT,
             tag TEXT,
-            status TEXT NOT NULL DEFAULT 'inbox',
+            status TEXT NOT NULL DEFAULT 'Нове',
             priority TEXT NOT NULL DEFAULT 'normal',
             is_done INTEGER NOT NULL DEFAULT 0,
             deadline TEXT,
@@ -44,7 +51,7 @@ def _apply_simple_migrations(cursor: sqlite3.Cursor) -> None:
         cursor.execute("ALTER TABLE tasks ADD COLUMN tag TEXT")
 
     if "status" not in existing_columns:
-        cursor.execute("ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'inbox'")
+        cursor.execute("ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'Нове'")
 
     if "priority" not in existing_columns:
         cursor.execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
@@ -67,6 +74,10 @@ def _apply_simple_migrations(cursor: sqlite3.Cursor) -> None:
             (datetime.now(timezone.utc).isoformat(),),
         )
 
+    cursor.execute("UPDATE tasks SET status = 'Нове' WHERE status = 'inbox'")
+    cursor.execute("UPDATE tasks SET status = 'В процесі' WHERE status = 'in_progress'")
+    cursor.execute("UPDATE tasks SET status = 'Завершене' WHERE status = 'done'")
+
 
 def add_task(
     title: str,
@@ -85,12 +96,13 @@ def add_task(
             title, description, tag, status, priority,
             deadline, reminder_at, reminder_shown, created_at
         )
-        VALUES (?, ?, ?, 'inbox', ?, ?, ?, 0, ?)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?)
         """,
         (
             title,
             description,
             tag,
+            STATUS_NEW,
             priority,
             deadline,
             reminder_at,
@@ -136,6 +148,8 @@ def update_task(
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
 
+    safe_status = _safe_manual_status(status)
+
     cursor.execute(
         """
         UPDATE tasks
@@ -157,7 +171,7 @@ def update_task(
             title,
             description,
             tag,
-            status,
+            safe_status,
             priority,
             deadline,
             reminder_at,
@@ -173,9 +187,7 @@ def update_task(
 def delete_task(task_id: int) -> None:
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
-
     cursor.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-
     connection.commit()
     connection.close()
 
@@ -183,7 +195,6 @@ def delete_task(task_id: int) -> None:
 def get_task_by_id(task_id: int) -> dict | None:
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
-
     cursor.execute(
         """
         SELECT
@@ -195,18 +206,15 @@ def get_task_by_id(task_id: int) -> dict | None:
         (task_id,),
     )
     row = cursor.fetchone()
-
     connection.close()
     if row is None:
         return None
-
     return _row_to_task(row)
 
 
 def get_due_reminders(now_iso: str) -> list[dict]:
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
-
     cursor.execute(
         """
         SELECT
@@ -222,7 +230,6 @@ def get_due_reminders(now_iso: str) -> list[dict]:
         (now_iso,),
     )
     rows = cursor.fetchall()
-
     connection.close()
     return [_row_to_task(row) for row in rows]
 
@@ -230,14 +237,17 @@ def get_due_reminders(now_iso: str) -> list[dict]:
 def mark_reminder_shown(task_id: int) -> None:
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
-
-    cursor.execute(
-        "UPDATE tasks SET reminder_shown = 1 WHERE id = ?",
-        (task_id,),
-    )
-
+    cursor.execute("UPDATE tasks SET reminder_shown = 1 WHERE id = ?", (task_id,))
     connection.commit()
     connection.close()
+
+
+def _safe_manual_status(status: str) -> str:
+    if status == STATUS_OVERDUE:
+        return STATUS_NEW
+    if status in {STATUS_NEW, STATUS_IN_PROGRESS, STATUS_DONE, STATUS_CANCELLED}:
+        return status
+    return STATUS_NEW
 
 
 def _row_to_task(row: tuple) -> dict:
