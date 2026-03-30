@@ -15,6 +15,8 @@ def init_db() -> None:
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             title TEXT NOT NULL,
             description TEXT,
+            status TEXT NOT NULL DEFAULT 'inbox',
+            priority TEXT NOT NULL DEFAULT 'normal',
             is_done INTEGER NOT NULL DEFAULT 0,
             deadline TEXT,
             reminder_at TEXT,
@@ -36,6 +38,12 @@ def _apply_simple_migrations(cursor: sqlite3.Cursor) -> None:
 
     if "description" not in existing_columns:
         cursor.execute("ALTER TABLE tasks ADD COLUMN description TEXT")
+
+    if "status" not in existing_columns:
+        cursor.execute("ALTER TABLE tasks ADD COLUMN status TEXT NOT NULL DEFAULT 'inbox'")
+
+    if "priority" not in existing_columns:
+        cursor.execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'normal'")
 
     if "deadline" not in existing_columns:
         cursor.execute("ALTER TABLE tasks ADD COLUMN deadline TEXT")
@@ -61,18 +69,23 @@ def add_task(
     description: str | None,
     deadline: str | None,
     reminder_at: str | None,
+    priority: str = "normal",
 ) -> int:
     connection = sqlite3.connect(DB_PATH)
     cursor = connection.cursor()
 
     cursor.execute(
         """
-        INSERT INTO tasks (title, description, deadline, reminder_at, reminder_shown, created_at)
-        VALUES (?, ?, ?, ?, 0, ?)
+        INSERT INTO tasks (
+            title, description, status, priority,
+            deadline, reminder_at, reminder_shown, created_at
+        )
+        VALUES (?, ?, 'inbox', ?, ?, ?, 0, ?)
         """,
         (
             title,
             description,
+            priority,
             deadline,
             reminder_at,
             datetime.now(timezone.utc).isoformat(),
@@ -91,7 +104,9 @@ def get_tasks() -> list[dict]:
 
     cursor.execute(
         """
-        SELECT id, title, description, deadline, reminder_at, reminder_shown, created_at
+        SELECT
+            id, title, description, status, priority,
+            deadline, reminder_at, reminder_shown, created_at
         FROM tasks
         ORDER BY id DESC
         """
@@ -106,6 +121,8 @@ def update_task(
     task_id: int,
     title: str,
     description: str | None,
+    status: str,
+    priority: str,
     deadline: str | None,
     reminder_at: str | None,
 ) -> None:
@@ -115,10 +132,20 @@ def update_task(
     cursor.execute(
         """
         UPDATE tasks
-        SET title = ?, description = ?, deadline = ?, reminder_at = ?, reminder_shown = 0
+        SET
+            title = ?,
+            description = ?,
+            status = ?,
+            priority = ?,
+            deadline = ?,
+            reminder_at = ?,
+            reminder_shown = CASE
+                WHEN COALESCE(reminder_at, '') <> COALESCE(?, '') THEN 0
+                ELSE reminder_shown
+            END
         WHERE id = ?
         """,
-        (title, description, deadline, reminder_at, task_id),
+        (title, description, status, priority, deadline, reminder_at, reminder_at, task_id),
     )
 
     connection.commit()
@@ -141,7 +168,9 @@ def get_task_by_id(task_id: int) -> dict | None:
 
     cursor.execute(
         """
-        SELECT id, title, description, deadline, reminder_at, reminder_shown, created_at
+        SELECT
+            id, title, description, status, priority,
+            deadline, reminder_at, reminder_shown, created_at
         FROM tasks
         WHERE id = ?
         """,
@@ -162,7 +191,9 @@ def get_due_reminders(now_iso: str) -> list[dict]:
 
     cursor.execute(
         """
-        SELECT id, title, description, deadline, reminder_at, reminder_shown, created_at
+        SELECT
+            id, title, description, status, priority,
+            deadline, reminder_at, reminder_shown, created_at
         FROM tasks
         WHERE reminder_at IS NOT NULL
           AND reminder_at != ''
@@ -196,8 +227,10 @@ def _row_to_task(row: tuple) -> dict:
         "id": row[0],
         "title": row[1],
         "description": row[2],
-        "deadline": row[3],
-        "reminder_at": row[4],
-        "reminder_shown": row[5],
-        "created_at": row[6],
+        "status": row[3],
+        "priority": row[4],
+        "deadline": row[5],
+        "reminder_at": row[6],
+        "reminder_shown": row[7],
+        "created_at": row[8],
     }
