@@ -13,7 +13,10 @@ from app.database import (
     STATUS_IN_PROGRESS,
     STATUS_NEW,
     STATUS_OVERDUE,
+    delete_task,
+    get_task_by_id,
     get_tasks,
+    update_task,
 )
 
 
@@ -26,6 +29,7 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.all_tasks: list[dict] = []
         self.filtered_tasks: list[dict] = []
         self.selected_task_id: int | None = None
+        self.context_task_id: int | None = None
 
         self._setup_css()
         self._build_ui()
@@ -48,6 +52,18 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         .task-meta {
             opacity: 0.75;
             font-size: 12px;
+        }
+        .popover-card {
+            padding: 12px;
+            min-width: 300px;
+        }
+        .popover-title {
+            font-weight: 700;
+            font-size: 15px;
+        }
+        .popover-row {
+            font-size: 12px;
+            opacity: 0.9;
         }
         .overdue-text {
             color: #d14b4b;
@@ -77,12 +93,11 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         content.set_margin_start(12)
         content.set_margin_end(12)
 
-        # Left panel
         left = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
-        left.set_size_request(320, -1)
+        left.set_size_request(340, -1)
         left.add_css_class("section")
 
-        left_title = Gtk.Label(label="Tasks")
+        left_title = Gtk.Label(label="Задачі")
         left_title.set_xalign(0)
         left_title.add_css_class("panel-title")
 
@@ -123,7 +138,6 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         left.append(self.new_task_button)
         left.append(self.tasks_listbox)
 
-        # Right area
         right = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
         right.add_css_class("section")
 
@@ -135,22 +149,18 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.mode_stack.set_hexpand(True)
         self.mode_stack.set_vexpand(True)
 
-        self.calendar_placeholder = Gtk.Label(label="Calendar view (наступний етап міграції)")
-
-        self.details_box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=8)
-        self.details_title = Gtk.Label(label="Details")
-        self.details_title.set_xalign(0)
-        self.details_title.add_css_class("panel-title")
-        self.details_content = Gtk.Label(label="Оберіть задачу у списку зліва")
-        self.details_content.set_xalign(0)
-        self.details_content.set_wrap(True)
-        self.details_box.append(self.details_title)
-        self.details_box.append(self.details_content)
+        self.calendar_placeholder = Gtk.Label(
+            label="Calendar view (наступний етап міграції).\nШвидкі деталі задачі доступні через popover у списку зліва."
+        )
+        self.calendar_placeholder.set_wrap(True)
 
         self.new_task_placeholder = Gtk.Label(label="New task view (placeholder на цьому етапі)")
+        self.new_task_placeholder.set_wrap(True)
+
+        self.edit_page = self._build_edit_page()
 
         self.mode_stack.add_titled(self.calendar_placeholder, "calendar", "Calendar")
-        self.mode_stack.add_titled(self.details_box, "details", "Details")
+        self.mode_stack.add_titled(self.edit_page, "edit", "Edit Task")
         self.mode_stack.add_titled(self.new_task_placeholder, "new", "New Task")
 
         stack_switcher = Gtk.StackSwitcher(stack=self.mode_stack)
@@ -164,6 +174,144 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
 
         root.append(content)
         self.set_content(root)
+
+        self.task_popover = self._build_task_popover()
+        self.context_popover = self._build_context_popover()
+
+    def _build_task_popover(self) -> Gtk.Popover:
+        popover = Gtk.Popover()
+        popover.set_autohide(True)
+
+        card = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=6)
+        card.add_css_class("popover-card")
+
+        self.pop_title = Gtk.Label()
+        self.pop_title.set_xalign(0)
+        self.pop_title.add_css_class("popover-title")
+
+        self.pop_description = Gtk.Label()
+        self.pop_description.set_xalign(0)
+        self.pop_description.set_wrap(True)
+
+        self.pop_tag = Gtk.Label()
+        self.pop_status = Gtk.Label()
+        self.pop_priority = Gtk.Label()
+        self.pop_deadline = Gtk.Label()
+        self.pop_reminder = Gtk.Label()
+        self.pop_created = Gtk.Label()
+
+        for field in [
+            self.pop_tag,
+            self.pop_status,
+            self.pop_priority,
+            self.pop_deadline,
+            self.pop_reminder,
+            self.pop_created,
+        ]:
+            field.set_xalign(0)
+            field.add_css_class("popover-row")
+
+        edit_button = Gtk.Button(label="Редагувати")
+        edit_button.connect("clicked", self._on_popover_edit_clicked)
+
+        card.append(self.pop_title)
+        card.append(self.pop_description)
+        card.append(Gtk.Separator())
+        card.append(self.pop_tag)
+        card.append(self.pop_status)
+        card.append(self.pop_priority)
+        card.append(self.pop_deadline)
+        card.append(self.pop_reminder)
+        card.append(self.pop_created)
+        card.append(edit_button)
+
+        popover.set_child(card)
+        return popover
+
+    def _build_context_popover(self) -> Gtk.Popover:
+        popover = Gtk.Popover()
+        popover.set_autohide(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.add_css_class("popover-card")
+
+        actions: list[tuple[str, str]] = [
+            ("Відкрити", "open"),
+            ("Редагувати", "edit"),
+            ("Видалити", "delete"),
+            ('Позначити як "В процесі"', "set_in_progress"),
+            ('Позначити як "Завершене"', "set_done"),
+            ('Позначити як "Відмінене"', "set_cancelled"),
+        ]
+
+        for label, action in actions:
+            button = Gtk.Button(label=label)
+            button.set_halign(Gtk.Align.FILL)
+            button.connect("clicked", self._on_context_action_clicked, action)
+            box.append(button)
+
+        popover.set_child(box)
+        return popover
+
+    def _build_edit_page(self) -> Gtk.Box:
+        container = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=10)
+
+        title = Gtk.Label(label="Редагування задачі")
+        title.set_xalign(0)
+        title.add_css_class("panel-title")
+
+        self.edit_task_info = Gtk.Label(label="Оберіть задачу")
+        self.edit_task_info.set_xalign(0)
+
+        grid = Gtk.Grid(column_spacing=8, row_spacing=8)
+
+        self.edit_title = Gtk.Entry()
+        self.edit_description = Gtk.TextView()
+        self.edit_description.set_vexpand(True)
+        self.edit_description.set_size_request(-1, 120)
+        self.edit_tag = Gtk.Entry()
+
+        self.edit_status_model = Gtk.StringList.new([
+            STATUS_NEW,
+            STATUS_IN_PROGRESS,
+            STATUS_DONE,
+            STATUS_CANCELLED,
+        ])
+        self.edit_status = Gtk.DropDown(model=self.edit_status_model)
+
+        self.edit_priority_model = Gtk.StringList.new(["low", "normal", "high"])
+        self.edit_priority = Gtk.DropDown(model=self.edit_priority_model)
+        self.edit_priority.set_selected(1)
+
+        self.edit_deadline = Gtk.Entry()
+        self.edit_deadline.set_placeholder_text("YYYY-MM-DD")
+        self.edit_reminder = Gtk.Entry()
+        self.edit_reminder.set_placeholder_text("YYYY-MM-DDTHH:MM")
+
+        rows: list[tuple[str, Gtk.Widget]] = [
+            ("Назва", self.edit_title),
+            ("Опис", self.edit_description),
+            ("Тег", self.edit_tag),
+            ("Статус", self.edit_status),
+            ("Пріоритет", self.edit_priority),
+            ("Дедлайн", self.edit_deadline),
+            ("Нагадування", self.edit_reminder),
+        ]
+
+        for i, (label_text, widget) in enumerate(rows):
+            label = Gtk.Label(label=label_text)
+            label.set_xalign(0)
+            grid.attach(label, 0, i, 1, 1)
+            grid.attach(widget, 1, i, 1, 1)
+
+        self.edit_save_button = Gtk.Button(label="Зберегти зміни")
+        self.edit_save_button.connect("clicked", self._on_save_edit_clicked)
+
+        container.append(title)
+        container.append(self.edit_task_info)
+        container.append(grid)
+        container.append(self.edit_save_button)
+        return container
 
     def _load_tasks(self) -> None:
         self.all_tasks = get_tasks()
@@ -223,6 +371,12 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.filtered_tasks = tasks
         self._render_task_list()
 
+        if self.selected_task_id is not None and not any(
+            task["id"] == self.selected_task_id for task in self.filtered_tasks
+        ):
+            self.selected_task_id = None
+            self.task_popover.popdown()
+
     def _render_task_list(self) -> None:
         for child in list(self.tasks_listbox):
             self.tasks_listbox.remove(child)
@@ -266,6 +420,11 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             row.set_child(box)
             row.task_id = task["id"]  # type: ignore[attr-defined]
 
+            right_click = Gtk.GestureClick.new()
+            right_click.set_button(3)
+            right_click.connect("pressed", self._on_row_right_click, row)
+            row.add_controller(right_click)
+
             self.tasks_listbox.append(row)
 
             if self.selected_task_id is not None and task["id"] == self.selected_task_id:
@@ -276,30 +435,214 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             if row:
                 self.tasks_listbox.select_row(row)
 
+    def _task_by_id(self, task_id: int | None) -> dict | None:
+        if task_id is None:
+            return None
+        return next((t for t in self.all_tasks if t["id"] == task_id), None)
+
     def _on_row_selected(self, _listbox: Gtk.ListBox, row: Gtk.ListBoxRow | None) -> None:
         if row is None:
             self.selected_task_id = None
-            self.details_content.set_text("Оберіть задачу у списку зліва")
+            self.task_popover.popdown()
             return
 
         task_id = getattr(row, "task_id", None)
         self.selected_task_id = task_id
-
-        selected_task = next((t for t in self.filtered_tasks if t["id"] == task_id), None)
-        if selected_task is None:
-            self.details_content.set_text("Задачу не знайдено")
+        task = self._task_by_id(task_id)
+        if task is None:
+            self.task_popover.popdown()
             return
 
-        self.mode_stack.set_visible_child_name("details")
+        self._show_task_popover(row, task)
 
-        details_text = (
-            f"Назва: {selected_task.get('title') or '—'}\n"
-            f"Статус: {self._effective_status(selected_task)}\n"
-            f"Тег: {selected_task.get('tag') or '—'}\n"
-            f"Пріоритет: {selected_task.get('priority') or '—'}\n"
-            f"Дедлайн: {selected_task.get('deadline') or '—'}"
+    def _show_task_popover(self, row: Gtk.ListBoxRow, task: dict) -> None:
+        self.pop_title.set_text(task.get("title") or "—")
+        self.pop_description.set_text(f"Опис: {self._fmt(task.get('description'))}")
+        self.pop_tag.set_text(f"Тег: {self._fmt(task.get('tag'))}")
+        self.pop_status.set_text(f"Статус: {self._effective_status(task)}")
+        self.pop_priority.set_text(f"Пріоритет: {self._fmt(task.get('priority'))}")
+        self.pop_deadline.set_text(f"Дедлайн: {self._fmt(task.get('deadline'))}")
+        self.pop_reminder.set_text(f"Нагадування: {self._fmt(task.get('reminder_at'))}")
+        self.pop_created.set_text(f"Створено: {self._fmt(task.get('created_at'))}")
+
+        self.task_popover.set_parent(row)
+        self.task_popover.popup()
+
+    def _on_popover_edit_clicked(self, _button: Gtk.Button) -> None:
+        if self.selected_task_id is None:
+            return
+        self.task_popover.popdown()
+        self._open_edit_mode(self.selected_task_id)
+
+    def _on_row_right_click(
+        self,
+        gesture: Gtk.GestureClick,
+        _n_press: int,
+        x: float,
+        y: float,
+        row: Gtk.ListBoxRow,
+    ) -> None:
+        self.tasks_listbox.select_row(row)
+        task_id = getattr(row, "task_id", None)
+        self.context_task_id = task_id
+
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+
+        self.context_popover.set_parent(row)
+        self.context_popover.set_pointing_to(rect)
+        self.context_popover.popup()
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+
+    def _on_context_action_clicked(self, _button: Gtk.Button, action: str) -> None:
+        task_id = self.context_task_id
+        self.context_popover.popdown()
+
+        if task_id is None:
+            return
+
+        if action == "open":
+            row = self._find_row_by_task_id(task_id)
+            task = self._task_by_id(task_id)
+            if row and task:
+                self._show_task_popover(row, task)
+            return
+
+        if action == "edit":
+            self._open_edit_mode(task_id)
+            return
+
+        if action == "delete":
+            delete_task(task_id)
+            self._after_task_mutation(task_id, deleted=True)
+            return
+
+        status_map = {
+            "set_in_progress": STATUS_IN_PROGRESS,
+            "set_done": STATUS_DONE,
+            "set_cancelled": STATUS_CANCELLED,
+        }
+        new_status = status_map.get(action)
+        if new_status is None:
+            return
+
+        task = get_task_by_id(task_id)
+        if task is None:
+            self._after_task_mutation(task_id, deleted=True)
+            return
+
+        update_task(
+            task_id=task_id,
+            title=task.get("title") or "(без назви)",
+            description=task.get("description"),
+            tag=task.get("tag"),
+            status=new_status,
+            priority=task.get("priority") or "normal",
+            deadline=task.get("deadline"),
+            reminder_at=task.get("reminder_at"),
         )
-        self.details_content.set_text(details_text)
+        self._after_task_mutation(task_id, deleted=False)
+
+    def _after_task_mutation(self, task_id: int, deleted: bool) -> None:
+        if deleted and self.selected_task_id == task_id:
+            self.selected_task_id = None
+            self.task_popover.popdown()
+            self.mode_stack.set_visible_child_name("calendar")
+
+        self._load_tasks()
+
+        if not deleted:
+            self.selected_task_id = task_id
+            row = self._find_row_by_task_id(task_id)
+            task = self._task_by_id(task_id)
+            if row and task:
+                self.tasks_listbox.select_row(row)
+                self._show_task_popover(row, task)
+
+    def _find_row_by_task_id(self, task_id: int) -> Gtk.ListBoxRow | None:
+        for row in self.tasks_listbox:
+            if getattr(row, "task_id", None) == task_id:
+                return row
+        return None
+
+    def _open_edit_mode(self, task_id: int) -> None:
+        task = get_task_by_id(task_id)
+        if task is None:
+            return
+
+        self.selected_task_id = task_id
+        self.edit_task_info.set_text(f"ID: {task_id}")
+        self.edit_title.set_text(task.get("title") or "")
+
+        description_buffer = self.edit_description.get_buffer()
+        description_buffer.set_text(task.get("description") or "")
+
+        self.edit_tag.set_text(task.get("tag") or "")
+        self._set_dropdown_by_text(self.edit_status, self.edit_status_model, task.get("status") or STATUS_NEW)
+        self._set_dropdown_by_text(
+            self.edit_priority,
+            self.edit_priority_model,
+            task.get("priority") or "normal",
+        )
+        self.edit_deadline.set_text(task.get("deadline") or "")
+        self.edit_reminder.set_text(task.get("reminder_at") or "")
+
+        self.mode_stack.set_visible_child_name("edit")
+
+    def _set_dropdown_by_text(self, dropdown: Gtk.DropDown, model: Gtk.StringList, value: str) -> None:
+        for i in range(model.get_n_items()):
+            if model.get_string(i) == value:
+                dropdown.set_selected(i)
+                return
+        dropdown.set_selected(0)
+
+    def _on_save_edit_clicked(self, _button: Gtk.Button) -> None:
+        task_id = self.selected_task_id
+        if task_id is None:
+            return
+
+        description_buffer = self.edit_description.get_buffer()
+        start = description_buffer.get_start_iter()
+        end = description_buffer.get_end_iter()
+        description = description_buffer.get_text(start, end, True).strip()
+
+        title = self.edit_title.get_text().strip() or "(без назви)"
+        tag = self.edit_tag.get_text().strip() or None
+
+        status_idx = self.edit_status.get_selected()
+        status = self.edit_status_model.get_string(status_idx) or STATUS_NEW
+
+        priority_idx = self.edit_priority.get_selected()
+        priority = self.edit_priority_model.get_string(priority_idx) or "normal"
+
+        deadline = self.edit_deadline.get_text().strip() or None
+        reminder = self.edit_reminder.get_text().strip() or None
+
+        update_task(
+            task_id=task_id,
+            title=title,
+            description=description or None,
+            tag=tag,
+            status=status,
+            priority=priority,
+            deadline=deadline,
+            reminder_at=reminder,
+        )
+
+        self._load_tasks()
+        self.mode_stack.set_visible_child_name("calendar")
+
+        row = self._find_row_by_task_id(task_id)
+        task = self._task_by_id(task_id)
+        if row and task:
+            self.tasks_listbox.select_row(row)
+            self._show_task_popover(row, task)
 
     def _on_new_task_clicked(self, _button: Gtk.Button) -> None:
         self.mode_stack.set_visible_child_name("new")
+
+    def _fmt(self, value: str | None) -> str:
+        return value if value else "—"
