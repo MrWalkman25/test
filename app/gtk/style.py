@@ -72,9 +72,47 @@ APP_CSS = """
     transition: all 200ms ease;
 }
 
+/* Compact mode chips padding */
+.calendar-day-box .calendar-chip {
+    padding: 2px 6px;
+    font-size: 10px;
+}
+
 .calendar-chip:hover {
     filter: brightness(1.1);
     transform: translateY(-1px);
+}
+
+.quick-action-bar {
+    opacity: 0.2;
+    transition: opacity 200ms ease;
+    margin-left: 8px;
+}
+
+.task-row:hover .quick-action-bar,
+.calendar-chip:hover .quick-action-bar {
+    opacity: 1.0;
+}
+
+.quick-action-btn {
+    padding: 0;
+    min-width: 28px;
+    min-height: 28px;
+    border-radius: 6px;
+    color: alpha(@window_fg_color, 0.6);
+}
+
+.quick-action-btn:hover {
+    background: alpha(@window_fg_color, 0.1);
+    color: @window_fg_color;
+}
+
+.quick-action-btn-done:hover {
+    color: @accent_green;
+}
+
+.quick-action-btn-delete:hover {
+    color: @accent_red;
 }
 
 .chip-overdue {
@@ -170,11 +208,20 @@ popover > contents {
     color: @accent_red;
     font-weight: 700;
 }
-
-.accent-blue {
-    color: @accent_blue;
+.overdue-section {
+    background: alpha(@accent_red, 0.05);
+    border-radius: 24px;
+    padding: 12px;
+    border: 1px solid alpha(@accent_red, 0.1);
 }
 
+.overdue-section .panel-title {
+    color: @accent_red;
+}
+
+.transparent-list {
+    background: transparent;
+}
 """
 
 

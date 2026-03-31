@@ -28,6 +28,7 @@ from app.gtk.components.task_list import TaskListView
 from app.gtk.components.calendar_view import CalendarView
 from app.gtk.components.task_form import TaskFormView
 from app.gtk.components.task_details import TaskDetailsView
+from app.gtk.components.today_view import TodayView
 from app.gtk.components.popovers import TaskInfoPopover, TaskContextPopover
 from datetime import datetime, timedelta, date
 
@@ -79,7 +80,24 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
 
     def _build_ui(self) -> None:
         header = Adw.HeaderBar()
-        header.set_title_widget(Gtk.Label(label="Таски, які ти все одно проїбеш"))
+        title_box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
+        title_box.append(Gtk.Label(label="Таски, які ти все одно проїбеш"))
+        
+        # Focus Toggle Button
+        self.focus_toggle = Gtk.ToggleButton()
+        self.focus_toggle.set_icon_name("preferences-system-notifications-symbolic")
+        self.focus_toggle.set_tooltip_text("Увімкнути Фокус")
+        self.focus_toggle.connect("toggled", self._on_focus_toggle)
+        header.pack_end(self.focus_toggle)
+
+        # Hide to Tray Button
+        self.btn_hide = Gtk.Button()
+        self.btn_hide.set_icon_name("window-minimize-symbolic")
+        self.btn_hide.set_tooltip_text("Сховати в трей")
+        self.btn_hide.connect("clicked", self._on_hide_to_tray)
+        header.pack_end(self.btn_hide)
+        
+        header.set_title_widget(title_box)
 
 
         root = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=0)
@@ -96,6 +114,7 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.task_list.connect("task-selected", self._on_task_selected)
         self.task_list.connect("task-activated", self._on_task_activated)
         self.task_list.connect("task-context-menu", self._on_task_context_menu)
+        self.task_list.connect("task-action", self._on_task_action)
         self.task_list.connect("new-task-clicked", self._on_new_task_clicked)
 
         # Right Stack
@@ -108,8 +127,14 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.calendar.connect("task-clicked", self._on_calendar_task_clicked)
         self.calendar.connect("task-right-clicked", self._on_calendar_task_right_clicked)
         self.calendar.connect("task-activated", self._on_task_activated)
+        self.calendar.connect("task-action", self._on_task_action)
         self.calendar.connect("day-right-clicked", self._on_day_right_clicked)
         self.calendar.connect("task-dropped", self._on_task_dropped)
+
+        # Keyboard Controller
+        key_controller = Gtk.EventControllerKey.new()
+        key_controller.connect("key-pressed", self._on_key_pressed)
+        self.add_controller(key_controller)
 
         # Form Component (Reused for New/Edit)
         self.task_form = TaskFormView()
@@ -119,6 +144,14 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.task_details = TaskDetailsView()
         self.task_details.connect("edit-clicked", self._on_edit_mode_requested)
 
+        # Today View Component (Priority Screen)
+        self.today_view = TodayView()
+        self.today_view.connect("task-selected", self._on_task_selected)
+        self.today_view.connect("task-activated", self._on_task_activated)
+        self.today_view.connect("task-context-menu", self._on_task_context_menu)
+        self.today_view.connect("task-action", self._on_task_action)
+
+        self.mode_stack.add_titled(self.today_view, "today", "Сьогодні")
         self.mode_stack.add_titled(self.calendar, "calendar", "Календар")
         self.mode_stack.add_titled(self.task_details, "task", "Деталі")
         self.mode_stack.add_titled(self.task_form, "form", "Форма")
@@ -140,16 +173,15 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.all_tasks = [Task.from_dict(t) for t in raw_tasks]
         self.task_list.set_tasks(self.all_tasks)
         self.calendar.set_tasks(self.all_tasks)
+        self.today_view.set_tasks(self.all_tasks)
 
     # --- Signals Handlers ---
 
-    def _on_task_selected(self, _list, task_id):
-        # Triggered on single click in the task list
+    def _on_task_selected(self, _comp, task_id, widget):
+        # Triggered on single click in the task list or today view
         task = self._get_task(task_id)
         if task:
-            row = self.task_list.find_row_by_task_id(task_id)
-            if row:
-                self._show_task_popover(row, task)
+            self._show_task_popover(widget, task)
             update_last_interaction(task_id)
 
     def _on_task_activated(self, _comp, task_id):
@@ -190,10 +222,8 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
 
     # --- Popover Management ---
 
-    def _on_task_context_menu(self, _comp, task_id, x, y):
-        row = self.task_list.find_row_by_task_id(task_id)
-        if row:
-            self._show_context_popover(row, task_id, x, y)
+    def _on_task_context_menu(self, _comp, task_id, widget, x, y):
+        self._show_context_popover(widget, task_id, x, y)
 
     def _on_calendar_task_clicked(self, _comp, task_id, widget):
         task = self._get_task(task_id)
@@ -268,8 +298,76 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             from app.database import duplicate_task
             new_id = duplicate_task(task_id)
             if new_id: self._load_tasks()
-        elif action == "postpone":
+        else:
+            # Handle all other quick actions
+            self._handle_quick_action(task_id, action)
+
+    def _on_task_action(self, _comp, task_id, action):
+        self._handle_quick_action(task_id, action)
+
+    def _handle_quick_action(self, task_id: int, action: str):
+        if action == "edit":
+            self._open_edit_mode(task_id)
+            return
+        elif action == "delete":
+            self._delete_task_confirm(task_id)
+            return
+
+        task = get_task_by_id(task_id)
+        if not task: return
+
+        if action == "done":
+            new_status = STATUS_DONE if task.get("status") != STATUS_DONE else STATUS_NEW
+            self._quick_update_status(task_id, new_status)
+        elif action == "tomorrow":
             self._postpone_task(task_id)
+        elif action == "plus_1h":
+            # Reuse logic from notification action
+            param = GLib.Variant("i", task_id)
+            self._on_action_task_delay_1h(None, param)
+        elif action == "clear_date":
+            update_task(
+                task_id=task_id,
+                title=task["title"],
+                description=task["description"],
+                tag=task["tag"],
+                status=task["status"],
+                priority=task["priority"],
+                deadline=None,
+                reminder_at=None
+            )
+            self._load_tasks()
+
+    def _on_key_pressed(self, _controller, keyval, _keycode, _state):
+        task_id = self.task_list.selected_task_id
+        if not task_id: return False
+
+        key_name = Gdk.keyval_name(keyval)
+        
+        if key_name == "Return":
+            self._open_full_task_view(task_id)
+            return True
+        elif key_name in {"d", "D", "space"}:
+            self._handle_quick_action(task_id, "done")
+            return True
+        elif key_name in {"t", "T"}:
+            self._handle_quick_action(task_id, "tomorrow")
+            return True
+        elif key_name in {"h", "H"}:
+            self._handle_quick_action(task_id, "plus_1h")
+            return True
+        elif key_name in {"Delete", "BackSpace"}:
+            self._handle_quick_action(task_id, "delete")
+            return True
+        elif key_name == "Escape":
+            self.mode_stack.set_visible_child_name("calendar")
+            self._dismiss_all_popovers()
+            return True
+        elif key_name in {"f", "F"} and (_state & Gdk.ModifierType.CONTROL_MASK):
+            self.focus_toggle.set_active(not self.focus_toggle.get_active())
+            return True
+
+        return False
 
     def _postpone_task(self, task_id):
         task = get_task_by_id(task_id)
@@ -470,6 +568,22 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         if self._notification_timer_id:
             GLib.Source.remove(self._notification_timer_id)
             self._notification_timer_id = 0
+
+    def _on_focus_toggle(self, btn):
+        active = btn.get_active()
+        app = self.get_application()
+        if hasattr(app, "set_focus_mode"):
+            app.set_focus_mode(active)
+            if active:
+                btn.set_icon_name("notifications-disabled-symbolic")
+                btn.set_tooltip_text("Вимкнути Фокус")
+            else:
+                btn.set_icon_name("preferences-system-notifications-symbolic")
+                btn.set_tooltip_text("Увімкнути Фокус")
+
+    def _on_hide_to_tray(self, _btn):
+        print("Window: Hiding to tray")
+        self.hide()
 
     def _delete_task_confirm(self, task_id):
 

@@ -4,9 +4,10 @@ from app.models import Task, STATUS_NEW, STATUS_IN_PROGRESS, STATUS_DONE, STATUS
 
 class TaskListView(Gtk.Box):
     __gsignals__ = {
-        "task-selected": (GObject.SignalFlags.RUN_FIRST, None, (int,)),
+        "task-selected": (GObject.SignalFlags.RUN_FIRST, None, (int, Gtk.Widget)),
         "task-activated": (GObject.SignalFlags.RUN_FIRST, None, (int,)),
-        "task-context-menu": (GObject.SignalFlags.RUN_FIRST, None, (int, float, float)),
+        "task-context-menu": (GObject.SignalFlags.RUN_FIRST, None, (int, Gtk.Widget, float, float)),
+        "task-action": (GObject.SignalFlags.RUN_FIRST, None, (int, str)),
         "new-task-clicked": (GObject.SignalFlags.RUN_FIRST, None, ()),
     }
 
@@ -167,6 +168,11 @@ class TaskListView(Gtk.Box):
             text_box.append(title)
             text_box.append(meta)
             box.append(text_box)
+            
+            # Quick Actions
+            actions = self._build_quick_actions(task.id)
+            box.append(actions)
+
             row.set_child(box)
 
             # Events
@@ -213,19 +219,44 @@ class TaskListView(Gtk.Box):
             child = child.get_next_sibling()
         return rows
 
+    def _build_quick_actions(self, task_id: int) -> Gtk.Box:
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        actions.add_css_class("quick-action-bar")
+        
+        btns = [
+            ("object-select-symbolic", "done", "Готово", "quick-action-btn-done"),
+            ("go-next-symbolic", "tomorrow", "На завтра", ""),
+            ("appointment-new-symbolic", "plus_1h", "+1 год", ""),
+            ("edit-clear-all-symbolic", "clear_date", "Без дати", ""),
+            ("edit-symbolic", "edit", "Редагувати", ""),
+            ("user-trash-symbolic", "delete", "Видалити", "quick-action-btn-delete"),
+        ]
+        
+        for icon, action, tooltip, extra_class in btns:
+            btn = Gtk.Button()
+            btn.set_has_frame(False)
+            btn.add_css_class("quick-action-btn")
+            if extra_class: btn.add_css_class(extra_class)
+            btn.set_icon_name(icon)
+            btn.set_tooltip_text(tooltip)
+            btn.connect("clicked", lambda _, a=action: self.emit("task-action", task_id, a))
+            actions.append(btn)
+            
+        return actions
+
     def _on_row_selected(self, _, row):
         if row and not self._suppress_selection_signal:
             task_id = getattr(row, "task_id", None)
             if task_id:
                 self.selected_task_id = task_id
-                self.emit("task-selected", task_id)
+                self.emit("task-selected", task_id, row)
 
     def _on_row_clicked(self, gesture, n_press, x, y, row):
         task_id = getattr(row, "task_id", None)
         if not task_id: return
 
         if gesture.get_current_button() == 3: # Right click
-            self.emit("task-context-menu", task_id, x, y)
+            self.emit("task-context-menu", task_id, row, x, y)
             gesture.set_state(Gtk.EventSequenceState.CLAIMED)
             return
 
@@ -244,7 +275,7 @@ class TaskListView(Gtk.Box):
         if row:
             task_id = getattr(row, "task_id", None)
             if task_id:
-                self.emit("task-selected", task_id)
+                self.emit("task-selected", task_id, row)
         return False
 
     def _cancel_pending_click(self):

@@ -12,6 +12,7 @@ class CalendarView(Gtk.Box):
         "day-right-clicked": (GObject.SignalFlags.RUN_FIRST, None, (str, Gtk.Widget, float, float)), # str iso date
         "day-activated": (GObject.SignalFlags.RUN_FIRST, None, (str,)),
         "task-dropped": (GObject.SignalFlags.RUN_FIRST, None, (int, str)),
+        "task-action": (GObject.SignalFlags.RUN_FIRST, None, (int, str)),
     }
 
     def __init__(self):
@@ -40,7 +41,7 @@ class CalendarView(Gtk.Box):
         self.btn_day_mode = Gtk.Button(label="Сьогодні")
         self.btn_month.connect("clicked", lambda _: self.set_mode("month"))
         self.btn_week.connect("clicked", lambda _: self.set_mode("week"))
-        self.btn_day_mode.connect("clicked", lambda _: self.set_mode("day"))
+        self.btn_day_mode.connect("clicked", lambda _: (self.jump_today(), self.set_mode("day")))
 
 
         self.btn_prev = Gtk.Button(label="←")
@@ -99,7 +100,6 @@ class CalendarView(Gtk.Box):
 
     def set_mode(self, mode: str):
         self.calendar_mode = mode
-        if mode == "day": self.calendar_focus_date = date.today()
         self.render()
 
 
@@ -282,8 +282,19 @@ class CalendarView(Gtk.Box):
         
         box = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=6)
         lbl = Gtk.Label(label=" • ".join(parts))
-        lbl.set_xalign(0); lbl.set_ellipsize(3) # PANGO_ELLIPSIZE_END
-        box.append(lbl)
+        lbl.set_xalign(0)
+        
+        if emphasize:
+            lbl.set_ellipsize(3) # END
+            lbl.set_hexpand(True)
+            box.append(lbl)
+            # Add Quick Actions
+            actions = self._build_quick_actions(task.id)
+            box.append(actions)
+        else:
+            lbl.set_ellipsize(3)
+            lbl.set_hexpand(True)
+            box.append(lbl)
 
         box.set_halign(Gtk.Align.FILL)
         box.add_css_class("calendar-chip")
@@ -327,6 +338,28 @@ class CalendarView(Gtk.Box):
             return (0 if is_overdue else 1, 0 if is_timed else 1, task.deadline)
 
         return sorted(res, key=sort_key)
+
+    def _build_quick_actions(self, task_id: int) -> Gtk.Box:
+        # Re-implemented for Calendar Chips
+        actions = Gtk.Box(orientation=Gtk.Orientation.HORIZONTAL, spacing=2)
+        actions.add_css_class("quick-action-bar")
+        
+        btns = [
+             ("object-select-symbolic", "done", "Готово", "quick-action-btn-done"),
+             ("go-next-symbolic", "tomorrow", "На завтра", ""),
+             ("user-trash-symbolic", "delete", "Видалити", "quick-action-btn-delete"),
+        ] # Compact list for chips
+        
+        for icon, action, tooltip, extra_class in btns:
+            btn = Gtk.Button()
+            btn.set_has_frame(False)
+            btn.add_css_class("quick-action-btn")
+            if extra_class: btn.add_css_class(extra_class)
+            btn.set_icon_name(icon)
+            btn.set_tooltip_text(tooltip)
+            btn.connect("clicked", lambda _, a=action: self.emit("task-action", task_id, a))
+            actions.append(btn)
+        return actions
 
 
     def _on_day_clicked(self, gesture, n_press, x, y, day_date):

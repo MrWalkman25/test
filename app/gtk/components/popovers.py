@@ -127,8 +127,11 @@ class TaskContextPopover(Gtk.Popover):
         actions = [
             ("Відкрити", "open", "document-open-symbolic"),
             ("Редагувати", "edit", "document-edit-symbolic"),
+            ("Виконано / Нове", "done", "object-select-symbolic"),
             ("Дублювати", "duplicate", "content-copy-symbolic"),
             ("На завтра", "postpone", "go-next-symbolic"),
+            ("+1 год", "plus_1h", "appointment-new-symbolic"),
+            ("Без дати", "clear_date", "edit-clear-all-symbolic"),
             ("Видалити", "delete", "user-trash-symbolic"),
         ]
 
