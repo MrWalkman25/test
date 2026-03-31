@@ -1,6 +1,6 @@
 # Local Task Manager (GTK)
 
-Локальний desktop task manager на **GTK4 + libadwaita** з SQLite.
+Фінальна версія застосунку працює на **GTK4 + libadwaita**.
 
 ## Системні пакети (Ubuntu / Zorin / Debian-based)
 ```bash
@@ -15,19 +15,15 @@ sudo apt install -y \
   libnotify-bin
 ```
 
-## Запуск (основний сценарій)
+## Запуск
 ```bash
 ./start.sh
 ```
 
-## Альтернативні скрипти
-- `./setup.sh` — створити `.venv` і встановити pip-залежності.
-- `./run.sh` — запуск з уже створеного `.venv`.
-- `./start_gtk.sh` — legacy alias на `./start.sh`.
-
-## Що більше не використовується
-- Qt / PySide6 UI видалено з основного шляху запуску.
-- `main.py` тепер запускає GTK-версію як основну.
+## Поточний стан
+- Основний та єдиний UI: GTK/libadwaita.
+- Запуск тільки через системний `python3`.
+- `.venv`, Qt/PySide6 і legacy-скрипти більше не використовуються.
 
 ## Дані
 - SQLite база: `tasks.db` у корені проєкту (створюється автоматично).
