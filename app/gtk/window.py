@@ -90,11 +90,12 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.focus_toggle.connect("toggled", self._on_focus_toggle)
         header.pack_end(self.focus_toggle)
 
-        # Hide to Tray Button
+        # Hide to Tray Button (Disabled for stability)
         self.btn_hide = Gtk.Button()
         self.btn_hide.set_icon_name("window-minimize-symbolic")
-        self.btn_hide.set_tooltip_text("Сховати в трей")
+        self.btn_hide.set_tooltip_text("Сховати в трей (Вимкнено)")
         self.btn_hide.connect("clicked", self._on_hide_to_tray)
+        self.btn_hide.set_visible(False) # Hiding it
         header.pack_end(self.btn_hide)
         
         header.set_title_widget(title_box)
@@ -169,6 +170,7 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.set_content(root)
 
     def _load_tasks(self) -> None:
+        self._dismiss_all_popovers()
         raw_tasks = get_tasks()
         self.all_tasks = [Task.from_dict(t) for t in raw_tasks]
         self.task_list.set_tasks(self.all_tasks)
@@ -264,7 +266,9 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
 
     def _dismiss_all_popovers(self):
         for p in [self.active_context_popover, self.active_task_popover, self.active_day_popover]:
-            if p: p.popdown()
+            if p:
+                p.popdown()
+                p.unparent()
         self.active_context_popover = self.active_task_popover = self.active_day_popover = None
 
     def _show_task_popover(self, anchor, task: Task):
@@ -582,8 +586,8 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
                 btn.set_tooltip_text("Увімкнути Фокус")
 
     def _on_hide_to_tray(self, _btn):
-        print("Window: Hiding to tray")
-        self.hide()
+        print("Window: Tray disabled. Cannot hide.")
+        # self.hide()
 
     def _delete_task_confirm(self, task_id):
 
