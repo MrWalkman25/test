@@ -1,18 +1,8 @@
-# Local Task Manager
+# Local Task Manager (GTK)
 
-Локальний desktop task manager (поточна версія на PySide6 + SQLite) + паралельний GTK skeleton для міграції.
+Локальний desktop task manager на **GTK4 + libadwaita** з SQLite.
 
-## Основний запуск поточної Qt-версії
-```bash
-./start.sh
-```
-
-## Запуск GTK skeleton (перший етап міграції)
-```bash
-./start_gtk.sh
-```
-
-### Системні пакети для GTK4 + libadwaita (Ubuntu / Zorin OS)
+## Системні пакети (Ubuntu / Zorin / Debian-based)
 ```bash
 sudo apt update
 sudo apt install -y \
@@ -25,19 +15,19 @@ sudo apt install -y \
   libnotify-bin
 ```
 
-## Що вже є в GTK skeleton
-- `Adw.Application` + `Adw.ApplicationWindow`
-- HeaderBar
-- двоколонковий layout:
-  - вузька ліва панель (місце під фільтри + список задач + кнопка нової задачі)
-  - велика права область (Stack: calendar/details/new placeholders)
-- читання задач із поточної SQLite БД та показ у лівому списку
+## Запуск (основний сценарій)
+```bash
+./start.sh
+```
 
-## Legacy-скрипти
-- `setup.sh` і `run.sh` залишені для сумісності.
+## Альтернативні скрипти
+- `./setup.sh` — створити `.venv` і встановити pip-залежності.
+- `./run.sh` — запуск з уже створеного `.venv`.
+- `./start_gtk.sh` — legacy alias на `./start.sh`.
 
-## Нагадування (Linux)
-- Для системних сповіщень використовується команда `notify-send`.
-- На більшості Linux-дистрибутивів вона доступна через пакет `libnotify-bin`.
+## Що більше не використовується
+- Qt / PySide6 UI видалено з основного шляху запуску.
+- `main.py` тепер запускає GTK-версію як основну.
 
-Після першого запуску в корені проєкту з'явиться файл `tasks.db`.
+## Дані
+- SQLite база: `tasks.db` у корені проєкту (створюється автоматично).

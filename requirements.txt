@@ -1,1 +1,4 @@
-PySide6>=6.7.0
+# Runtime dependencies are provided by system GTK packages:
+# - python3-gi
+# - gir1.2-gtk-4.0
+# - gir1.2-adw-1

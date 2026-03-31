@@ -1,11 +1,9 @@
-from app.database import init_db
-from app.gtk.app import TaskManagerGtkApp
+"""Legacy GTK entrypoint.
 
+Use `python3 main.py` or `./start.sh` for the primary launch path.
+"""
 
-def main() -> None:
-    init_db()
-    app = TaskManagerGtkApp()
-    app.run([])
+from main import main
 
 
 if __name__ == "__main__":

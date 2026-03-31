@@ -1,16 +1,11 @@
-from PySide6.QtWidgets import QApplication
-
 from app.database import init_db
-from app.ui.main_window import MainWindow
+from app.gtk.app import TaskManagerGtkApp
 
 
 def main() -> None:
     init_db()
-
-    app = QApplication([])
-    window = MainWindow()
-    window.show()
-    app.exec()
+    app = TaskManagerGtkApp()
+    app.run([])
 
 
 if __name__ == "__main__":
