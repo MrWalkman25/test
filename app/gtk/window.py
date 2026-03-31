@@ -33,8 +33,12 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         self.selected_task_id: int | None = None
         self.pending_single_click_source: int | None = None
         self.pending_single_click_row: Gtk.ListBoxRow | None = None
+        self.pending_calendar_click_source: int | None = None
+        self.pending_calendar_task_id: int | None = None
+        self.pending_calendar_widget: Gtk.Widget | None = None
         self.active_context_popover: Gtk.Popover | None = None
         self.active_task_popover: Gtk.Popover | None = None
+        self.active_day_popover: Gtk.Popover | None = None
 
         self._setup_css()
         self._build_ui()
@@ -298,6 +302,26 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             button.connect("clicked", self._on_context_action_clicked, action, task_id, popover)
             box.append(button)
 
+        popover.set_child(box)
+        return popover
+
+    def _build_day_context_popover(self, day_date: date) -> Gtk.Popover:
+        popover = Gtk.Popover()
+        popover.set_autohide(True)
+
+        box = Gtk.Box(orientation=Gtk.Orientation.VERTICAL, spacing=4)
+        box.add_css_class("popover-card")
+
+        add_button = Gtk.Button(label="Додати задачу на цей день")
+        add_button.set_halign(Gtk.Align.FILL)
+        add_button.connect("clicked", self._on_day_menu_add_task_clicked, day_date, popover)
+
+        open_day_button = Gtk.Button(label="Відкрити день на весь екран")
+        open_day_button.set_halign(Gtk.Align.FILL)
+        open_day_button.connect("clicked", self._on_day_menu_open_day_clicked, day_date, popover)
+
+        box.append(add_button)
+        box.append(open_day_button)
         popover.set_child(box)
         return popover
 
@@ -752,6 +776,11 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         day_double_click.connect("released", self._on_day_cell_clicked, day_date)
         day_box.add_controller(day_double_click)
 
+        day_right_click = Gtk.GestureClick.new()
+        day_right_click.set_button(3)
+        day_right_click.connect("pressed", self._on_day_cell_right_click, day_date, day_box)
+        day_box.add_controller(day_right_click)
+
         motion = Gtk.EventControllerMotion()
         motion.connect("enter", self._on_day_hover_enter, day_box)
         motion.connect("leave", self._on_day_hover_leave, day_box)
@@ -774,6 +803,11 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         click.set_button(1)
         click.connect("released", self._on_calendar_task_clicked, task["id"], chip)
         chip.add_controller(click)
+
+        right_click = Gtk.GestureClick.new()
+        right_click.set_button(3)
+        right_click.connect("pressed", self._on_calendar_task_right_click, task["id"], chip)
+        chip.add_controller(right_click)
         return chip
 
     def _on_day_cell_clicked(
@@ -787,6 +821,33 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         if n_press == 2:
             self.day_plan_date = day_date
             self._render_calendar()
+
+    def _on_day_cell_right_click(
+        self,
+        gesture: Gtk.GestureClick,
+        _n_press: int,
+        x: float,
+        y: float,
+        day_date: date,
+        day_widget: Gtk.Widget,
+    ) -> None:
+        self._dismiss_context_popover()
+        self._dismiss_task_popover()
+        self._dismiss_day_popover()
+
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+
+        popover = self._build_day_context_popover(day_date)
+        popover.set_parent(day_widget)
+        popover.set_pointing_to(rect)
+        popover.connect("closed", self._on_day_popover_closed, popover)
+        popover.popup()
+        self.active_day_popover = popover
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
 
     def _on_day_hover_enter(self, _controller: Gtk.EventControllerMotion, _x: float, _y: float, day_box: Gtk.Box) -> None:
         day_box.add_css_class("calendar-day-box-hover")
@@ -813,11 +874,94 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
             self.tasks_listbox.select_row(row)
 
         if n_press == 2:
+            self._cancel_pending_calendar_click()
             self._open_full_task_view(task_id)
             return
 
         if n_press == 1:
-            self._show_task_popover(widget, task)
+            self._cancel_pending_calendar_click()
+            self.pending_calendar_task_id = task_id
+            self.pending_calendar_widget = widget
+            self.pending_calendar_click_source = GLib.timeout_add(
+                200, self._run_pending_calendar_click
+            )
+
+    def _on_calendar_task_right_click(
+        self,
+        gesture: Gtk.GestureClick,
+        _n_press: int,
+        x: float,
+        y: float,
+        task_id: int,
+        chip_widget: Gtk.Widget,
+    ) -> None:
+        self._cancel_pending_calendar_click()
+        self._dismiss_day_popover()
+        self._dismiss_task_popover()
+        self._show_task_context_menu(chip_widget, task_id, x, y)
+        gesture.set_state(Gtk.EventSequenceState.CLAIMED)
+
+    def _run_pending_calendar_click(self) -> bool:
+        task_id = self.pending_calendar_task_id
+        widget = self.pending_calendar_widget
+        self.pending_calendar_click_source = None
+        self.pending_calendar_task_id = None
+        self.pending_calendar_widget = None
+
+        if task_id is None or widget is None:
+            return False
+
+        task = self._task_by_id(task_id)
+        if task is None:
+            return False
+
+        self._show_task_popover(widget, task)
+        return False
+
+    def _cancel_pending_calendar_click(self) -> None:
+        if self.pending_calendar_click_source is not None:
+            GLib.source_remove(self.pending_calendar_click_source)
+            self.pending_calendar_click_source = None
+            self.pending_calendar_task_id = None
+            self.pending_calendar_widget = None
+
+    def _show_task_context_menu(self, anchor_widget: Gtk.Widget, task_id: int, x: float, y: float) -> None:
+        self._dismiss_context_popover()
+        self._dismiss_day_popover()
+
+        rect = Gdk.Rectangle()
+        rect.x = int(x)
+        rect.y = int(y)
+        rect.width = 1
+        rect.height = 1
+
+        popover = self._build_context_popover(task_id)
+        popover.set_parent(anchor_widget)
+        popover.set_pointing_to(rect)
+        popover.connect("closed", self._on_context_popover_closed, popover)
+        popover.popup()
+        self.active_context_popover = popover
+
+    def _on_day_menu_add_task_clicked(
+        self,
+        _button: Gtk.Button,
+        day_date: date,
+        popover: Gtk.Popover,
+    ) -> None:
+        popover.popdown()
+        self._dismiss_day_popover()
+        self._open_new_task_for_date(day_date)
+
+    def _on_day_menu_open_day_clicked(
+        self,
+        _button: Gtk.Button,
+        day_date: date,
+        popover: Gtk.Popover,
+    ) -> None:
+        popover.popdown()
+        self._dismiss_day_popover()
+        self.day_plan_date = day_date
+        self._render_calendar()
 
     def _tasks_for_date(self, day_date: date) -> list[dict]:
         return [t for t in self.all_tasks if self._deadline_date(t) == day_date]
@@ -1029,6 +1173,7 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
 
     def _show_task_popover(self, anchor_widget: Gtk.Widget, task: dict) -> None:
         self._dismiss_context_popover()
+        self._dismiss_day_popover()
         self._dismiss_task_popover()
         popover = self._build_task_popover(task, anchor_widget)
         popover.popup()
@@ -1073,18 +1218,7 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         if task_id is None:
             return
 
-        rect = Gdk.Rectangle()
-        rect.x = int(x)
-        rect.y = int(y)
-        rect.width = 1
-        rect.height = 1
-
-        popover = self._build_context_popover(task_id)
-        popover.set_parent(row)
-        popover.set_pointing_to(rect)
-        popover.connect("closed", self._on_context_popover_closed, popover)
-        popover.popup()
-        self.active_context_popover = popover
+        self._show_task_context_menu(row, task_id, x, y)
         gesture.set_state(Gtk.EventSequenceState.CLAIMED)
 
     def _on_context_action_clicked(
@@ -1145,6 +1279,15 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
         if self.active_context_popover is not None:
             self.active_context_popover.popdown()
             self.active_context_popover = None
+
+    def _on_day_popover_closed(self, _popover: Gtk.Popover, popover: Gtk.Popover) -> None:
+        if self.active_day_popover is popover:
+            self.active_day_popover = None
+
+    def _dismiss_day_popover(self) -> None:
+        if self.active_day_popover is not None:
+            self.active_day_popover.popdown()
+            self.active_day_popover = None
 
     def _on_task_popover_closed(self, _popover: Gtk.Popover, popover: Gtk.Popover) -> None:
         if self.active_task_popover is popover:
@@ -1327,6 +1470,12 @@ class TaskManagerGtkWindow(Adw.ApplicationWindow):
     def _on_new_task_clicked(self, _button: Gtk.Button) -> None:
         self._clear_new_task_form()
         self.new_form_error.set_text("")
+        self.mode_stack.set_visible_child_name("new")
+
+    def _open_new_task_for_date(self, day_date: date) -> None:
+        self._clear_new_task_form()
+        self.new_form_error.set_text("")
+        self.new_deadline_entry.set_text(day_date.strftime("%Y-%m-%d"))
         self.mode_stack.set_visible_child_name("new")
 
     def _clear_new_task_form(self) -> None:
